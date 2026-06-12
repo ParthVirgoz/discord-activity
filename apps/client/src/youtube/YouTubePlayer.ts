@@ -1,89 +1,115 @@
-declare global {
-  interface Window {
-    YT: typeof YT;
-    onYouTubeIframeAPIReady: () => void;
-  }
-}
+/**
+ * Discord Activities block external scripts (YouTube IFrame API).
+ * This player uses a plain <iframe> embed — allowed by Discord's CSP.
+ * Sync works by updating embed URL (start= & autoplay=).
+ */
 
-export interface YTPlayer {
-  playVideo(): void;
-  pauseVideo(): void;
-  seekTo(seconds: number, allowSeekAhead: boolean): void;
+export interface VideoPlayer {
+  play(startTime?: number): void;
+  pause(atTime?: number): void;
+  seek(time: number): void;
+  load(videoId: string, startTime?: number, autoplay?: boolean): void;
   getCurrentTime(): number;
-  getPlayerState(): number;
-  setPlaybackRate(rate: number): void;
-  loadVideoById(videoId: string, startSeconds?: number): void;
+  isPlaying(): boolean;
+  setPlaybackRate(_rate: number): void;
   destroy(): void;
 }
 
-const YT_LOADED = new Promise<void>((resolve) => {
-  if (window.YT?.Player) {
-    resolve();
-    return;
-  }
-  const prev = window.onYouTubeIframeAPIReady;
-  window.onYouTubeIframeAPIReady = () => {
-    prev?.();
-    resolve();
-  };
-  if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(tag);
-  }
-});
+function buildEmbedUrl(videoId: string, startSec: number, autoplay: boolean): string {
+  const params = new URLSearchParams({
+    start: String(Math.max(0, Math.floor(startSec))),
+    rel: "0",
+    modestbranding: "1",
+    playsinline: "1",
+  });
+  if (autoplay) params.set("autoplay", "1");
+  return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?${params}`;
+}
 
-export const YT_PLAYER_STATE = {
-  UNSTARTED: -1,
-  ENDED: 0,
-  PLAYING: 1,
-  PAUSED: 2,
-  BUFFERING: 3,
-  CUED: 5,
-} as const;
+export class IframeVideoPlayer implements VideoPlayer {
+  private iframe: HTMLIFrameElement;
+  private videoId = "";
+  private anchorTime = 0;
+  private playing = false;
+  private playStartedAt = 0;
+
+  constructor(container: HTMLElement) {
+    this.iframe = document.createElement("iframe");
+    this.iframe.title = "YouTube video player";
+    this.iframe.setAttribute(
+      "allow",
+      "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    );
+    this.iframe.allowFullscreen = true;
+    this.iframe.style.cssText = "width:100%;height:100%;border:0;";
+    container.appendChild(this.iframe);
+  }
+
+  load(videoId: string, startTime = 0, autoplay = false): void {
+    this.videoId = videoId;
+    this.anchorTime = startTime;
+    this.playing = autoplay;
+    if (autoplay) this.playStartedAt = Date.now();
+    this.iframe.src = buildEmbedUrl(videoId, startTime, autoplay);
+  }
+
+  play(startTime?: number): void {
+    if (startTime !== undefined) this.anchorTime = startTime;
+    this.playing = true;
+    this.playStartedAt = Date.now();
+    if (this.videoId) {
+      this.iframe.src = buildEmbedUrl(this.videoId, this.anchorTime, true);
+    }
+  }
+
+  pause(atTime?: number): void {
+    this.anchorTime = atTime ?? this.getCurrentTime();
+    this.playing = false;
+    if (this.videoId) {
+      this.iframe.src = buildEmbedUrl(this.videoId, this.anchorTime, false);
+    }
+  }
+
+  seek(time: number): void {
+    this.anchorTime = time;
+    if (this.videoId) {
+      this.iframe.src = buildEmbedUrl(this.videoId, time, this.playing);
+      if (this.playing) this.playStartedAt = Date.now();
+    }
+  }
+
+  getCurrentTime(): number {
+    if (!this.playing) return this.anchorTime;
+    return this.anchorTime + (Date.now() - this.playStartedAt) / 1000;
+  }
+
+  isPlaying(): boolean {
+    return this.playing;
+  }
+
+  setPlaybackRate(): void {
+    // Playback rate not supported without YouTube IFrame API (blocked in Discord)
+  }
+
+  destroy(): void {
+    this.iframe.remove();
+  }
+}
 
 export type PlayerEventHandler = {
   onReady?: () => void;
-  onStateChange?: (state: number) => void;
-  onError?: (code: number) => void;
 };
 
 export async function createYouTubePlayer(
   elementId: string,
   videoId: string,
   handlers: PlayerEventHandler
-): Promise<YTPlayer> {
-  await YT_LOADED;
+): Promise<VideoPlayer> {
+  const container = document.getElementById(elementId);
+  if (!container) throw new Error("Player container not found");
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timeout = setTimeout(() => {
-      if (!settled) reject(new Error("YouTube player load timeout"));
-    }, 15000);
-
-    new window.YT.Player(elementId, {
-      videoId: videoId || undefined,
-      playerVars: {
-        autoplay: 0,
-        controls: 1,
-        rel: 0,
-        modestbranding: 1,
-        origin: window.location.origin,
-      },
-      events: {
-        onReady: (event: { target: YTPlayer }) => {
-          settled = true;
-          clearTimeout(timeout);
-          handlers.onReady?.();
-          resolve(event.target);
-        },
-        onStateChange: (event: { data: number }) => {
-          handlers.onStateChange?.(event.data);
-        },
-        onError: (event: { data: number }) => {
-          handlers.onError?.(event.data);
-        },
-      },
-    });
-  });
+  const player = new IframeVideoPlayer(container);
+  if (videoId) player.load(videoId, 0, false);
+  handlers.onReady?.();
+  return player;
 }

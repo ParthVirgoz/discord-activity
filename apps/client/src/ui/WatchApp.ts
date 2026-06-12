@@ -1,18 +1,13 @@
 import type { Room } from "@colyseus/sdk";
 import { Callbacks } from "@colyseus/sdk";
 import type { WatchRoomState, QueueItem } from "../schema.js";
-import {
-  createYouTubePlayer,
-  YT_PLAYER_STATE,
-  type YTPlayer,
-} from "../youtube/YouTubePlayer.js";
+import { createYouTubePlayer, type VideoPlayer } from "../youtube/YouTubePlayer.js";
 import { parseYouTubeId, parsePlaylistId, fetchVideoTitle } from "../utils/youtube.js";
 import {
   searchYouTube,
   importYouTubePlaylist,
   type YouTubeVideoResult,
 } from "../utils/api.js";
-import { getYouTubeErrorMessage } from "../utils/youtubeErrors.js";
 
 const DRIFT_CHECK_INTERVAL_MS = 5000;
 const SYNC_APPLY_THRESHOLD = 0.5;
@@ -29,9 +24,8 @@ export interface SyncPayload {
 export class WatchApp {
   private room: Room<WatchRoomState>;
   private root: HTMLElement;
-  private player: YTPlayer | null = null;
+  private player: VideoPlayer | null = null;
   private isHost = false;
-  private suppressPlayerEvents = false;
   private driftTimer: ReturnType<typeof setInterval> | null = null;
   private loadedVideoId = "";
   private searchNextPageToken: string | null = null;
@@ -82,6 +76,7 @@ export class WatchApp {
             <button id="play-btn" type="button" disabled>Play</button>
             <button id="pause-btn" type="button" disabled>Pause</button>
             <button id="skip-btn" type="button" disabled>Skip</button>
+            <button id="ended-btn" type="button" disabled>Video ended</button>
             <span id="video-title" class="video-title"></span>
           </div>
         </div>
@@ -111,6 +106,7 @@ export class WatchApp {
     this.root.querySelector("#play-btn")?.addEventListener("click", () => this.hostPlay());
     this.root.querySelector("#pause-btn")?.addEventListener("click", () => this.hostPause());
     this.root.querySelector("#skip-btn")?.addEventListener("click", () => this.room.send("skipVideo", {}));
+    this.root.querySelector("#ended-btn")?.addEventListener("click", () => this.room.send("videoEnded", {}));
 
     this.root.querySelector("#url-input")?.addEventListener("keydown", (e) => {
       if ((e as KeyboardEvent).key === "Enter") this.handleLoad(false);
@@ -175,7 +171,7 @@ export class WatchApp {
     badge.classList.toggle("hidden", !isHost);
 
     const disabled = !isHost;
-    for (const id of ["#play-btn", "#pause-btn", "#skip-btn", "#queue-btn", "#import-playlist-btn", "#search-btn", "#load-btn"]) {
+    for (const id of ["#play-btn", "#pause-btn", "#skip-btn", "#ended-btn", "#queue-btn", "#import-playlist-btn", "#search-btn", "#load-btn"]) {
       (this.root.querySelector(id) as HTMLButtonElement).disabled = disabled;
     }
     (this.root.querySelector("#search-input") as HTMLInputElement).disabled = disabled;
@@ -305,19 +301,15 @@ export class WatchApp {
   private hostPlay() {
     if (!this.isHost || !this.player) return;
     const currentTime = this.player.getCurrentTime();
+    this.player.play(currentTime);
     this.room.send("play", { currentTime });
-    this.suppressPlayerEvents = true;
-    this.player.playVideo();
-    this.suppressPlayerEvents = false;
   }
 
   private hostPause() {
     if (!this.isHost || !this.player) return;
     const currentTime = this.player.getCurrentTime();
+    this.player.pause(currentTime);
     this.room.send("pause", { currentTime });
-    this.suppressPlayerEvents = true;
-    this.player.pauseVideo();
-    this.suppressPlayerEvents = false;
   }
 
   private bindRoomMessages() {
@@ -451,29 +443,12 @@ export class WatchApp {
     try {
       this.player = await createYouTubePlayer("yt-iframe-target", videoId, {
         onReady: () => this.setLoading(false),
-        onStateChange: (state) => this.onPlayerStateChange(state),
-        onError: (code) => {
-          this.setLoading(false);
-          this.showStatus(getYouTubeErrorMessage(code), true);
-        },
       });
       this.loadedVideoId = videoId;
       this.clearStatus();
     } catch {
       this.setLoading(false);
       this.showStatus("Failed to load YouTube player. Check your connection and try again.", true);
-    }
-  }
-
-  private onPlayerStateChange(state: number) {
-    if (this.suppressPlayerEvents || !this.isHost || !this.player) return;
-
-    if (state === YT_PLAYER_STATE.PLAYING) {
-      this.room.send("play", { currentTime: this.player.getCurrentTime() });
-    } else if (state === YT_PLAYER_STATE.PAUSED) {
-      this.room.send("pause", { currentTime: this.player.getCurrentTime() });
-    } else if (state === YT_PLAYER_STATE.ENDED) {
-      this.room.send("videoEnded", {});
     }
   }
 
@@ -501,33 +476,24 @@ export class WatchApp {
 
   private applyPlay(currentTime: number) {
     if (!this.player) return;
-    this.suppressPlayerEvents = true;
-    this.seekTo(currentTime);
-    this.player.playVideo();
-    this.suppressPlayerEvents = false;
+    this.player.play(currentTime);
   }
 
   private applyPause(currentTime: number) {
     if (!this.player) return;
-    this.suppressPlayerEvents = true;
-    this.seekTo(currentTime);
-    this.player.pauseVideo();
-    this.suppressPlayerEvents = false;
+    this.player.pause(currentTime);
   }
 
   private seekTo(time: number) {
     if (!this.player) return;
-    this.suppressPlayerEvents = true;
-    this.player.seekTo(time, true);
-    this.suppressPlayerEvents = false;
+    this.player.seek(time);
   }
 
   private startDriftTimer() {
     if (this.driftTimer) clearInterval(this.driftTimer);
     this.driftTimer = setInterval(() => {
       if (this.isHost || !this.player) return;
-      const state = this.player.getPlayerState();
-      if (state === YT_PLAYER_STATE.PLAYING || state === YT_PLAYER_STATE.BUFFERING) {
+      if (this.player.isPlaying()) {
         this.room.send("syncReport", { currentTime: this.player.getCurrentTime() });
       }
     }, DRIFT_CHECK_INTERVAL_MS);
