@@ -1,0 +1,39 @@
+{
+  "name": "client",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Colyseus + Discord Embedded App SDK",
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colyseus/discord-embedded-app-sdk.git"
+  },
+  "keywords": [
+    "discord",
+    "embedded",
+    "colyseus"
+  ],
+  "author": "Endel Dreyer",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/colyseus/discord-embedded-app-sdk/issues"
+  },
+  "homepage": "https://github.com/colyseus/discord-embedded-app-sdk#readme",
+  "devDependencies": {
+    "cloudflared": "^0.5.1",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^1.9.0",
+    "@pixi/tilemap": "^5.0.1",
+    "@tweenjs/tween.js": "^23.1.1",
+    "@colyseus/sdk": "^0.17.26",
+    "pixi.js": "^8.1.0"
+  }
+}
