@@ -38,7 +38,6 @@ export class WatchApp {
     this.bindRoomMessages();
     this.bindStateListeners();
     this.bindConnectionHandlers();
-    this.initFromJoinMessage();
     this.setConnectionStatus("connected");
   }
 
@@ -315,6 +314,7 @@ export class WatchApp {
   private bindRoomMessages() {
     this.room.onMessage("roomJoined", (data: { isHost: boolean; sync: SyncPayload }) => {
       this.setHostUI(data.isHost);
+      this.refreshUI();
       this.applySync(data.sync, true);
       this.startDriftTimer();
     });
@@ -368,17 +368,21 @@ export class WatchApp {
   private bindStateListeners() {
     const callbacks = Callbacks.get(this.room);
 
-    callbacks.onAdd("members", () => this.renderMembers());
-    callbacks.onRemove("members", () => this.renderMembers());
-    callbacks.onAdd("queue", () => this.renderQueue());
-    callbacks.onRemove("queue", () => this.renderQueue());
+    if (this.room.state.members) {
+      callbacks.onAdd("members", () => this.renderMembers());
+      callbacks.onRemove("members", () => this.renderMembers());
+    }
+    if (this.room.state.queue) {
+      callbacks.onAdd("queue", () => this.renderQueue());
+      callbacks.onRemove("queue", () => this.renderQueue());
+    }
     callbacks.onChange(this.room.state, () => {
       this.renderQueue();
       this.renderVideoTitle();
     });
   }
 
-  private initFromJoinMessage() {
+  private refreshUI() {
     this.renderMembers();
     this.renderQueue();
     this.renderVideoTitle();
@@ -386,8 +390,11 @@ export class WatchApp {
 
   private renderMembers() {
     const list = this.root.querySelector("#members-list") as HTMLUListElement;
+    if (!list) return;
     list.innerHTML = "";
-    this.room.state.members.forEach((member, sessionId) => {
+    const members = this.room.state.members;
+    if (!members?.forEach) return;
+    members.forEach((member, sessionId) => {
       const li = document.createElement("li");
       const isHost = sessionId === this.room.state.hostSessionId;
       const avatar = member.avatarUrl
@@ -400,8 +407,11 @@ export class WatchApp {
 
   private renderQueue() {
     const list = this.root.querySelector("#queue-list") as HTMLUListElement;
+    if (!list) return;
     list.innerHTML = "";
-    this.room.state.queue.forEach((item: QueueItem, index: number) => {
+    const queue = this.room.state.queue;
+    if (!queue?.forEach) return;
+    queue.forEach((item: QueueItem, index: number) => {
       const li = document.createElement("li");
       const title = item.title || item.videoId;
       li.innerHTML = `<span>${index + 1}. ${this.escapeHtml(title)}</span>`;

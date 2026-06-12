@@ -4,6 +4,7 @@ import { colyseusSDK } from "./utils/Colyseus.js";
 import type { WatchRoomState } from "./schema.js";
 import { authenticate } from "./utils/Auth.js";
 import { WatchApp } from "./ui/WatchApp.js";
+import { waitForWatchState, getWatchRoomErrorMessage } from "./utils/roomState.js";
 
 const appRoot = document.getElementById("app")!;
 
@@ -52,6 +53,7 @@ function showLoading(message: string) {
     showLoading("Joining your voice channel room…");
 
     const room = await joinWatchRoom();
+    await waitForWatchState(room);
 
     appRoot.innerHTML = "";
     new WatchApp(room, appRoot);
@@ -65,11 +67,9 @@ function showLoading(message: string) {
     const needsDeploy =
       msg.includes("watch_room") ||
       msg.includes("not defined") ||
-      msg.includes("520");
-    showError(
-      needsDeploy
-        ? "Server is outdated — redeploy Railway from the latest GitHub code, then try again."
-        : `Failed to join watch room: ${msg}`
-    );
+      msg.includes("520") ||
+      msg.includes("WATCH_ROOM_STATE_UNAVAILABLE") ||
+      msg.includes("old game");
+    showError(needsDeploy ? getWatchRoomErrorMessage() : `Failed to join watch room: ${msg}`);
   }
 })();
