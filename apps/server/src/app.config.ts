@@ -26,6 +26,10 @@ export default defineServer({
         app.use(securityHeaders);
         app.use(express.json({ limit: "16kb" }));
 
+        app.get("/", (_req, res) => {
+            res.json({ ok: true, service: "watch-together" });
+        });
+
         app.get("/health", (_req, res) => {
             res.json({
                 ok: true,

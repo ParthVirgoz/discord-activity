@@ -11,22 +11,25 @@ const express_1 = __importDefault(require("express"));
 /**
  * Import your Room files
  */
-const WatchRoom_1 = require("./rooms/WatchRoom");
+const MyRoom_1 = require("./rooms/MyRoom");
 const youtube_1 = __importDefault(require("./routes/youtube"));
 const securityHeaders_1 = require("./utils/securityHeaders");
 exports.default = (0, colyseus_1.defineServer)({
     rooms: {
-        watch_room: (0, colyseus_1.defineRoom)(WatchRoom_1.WatchRoom, {
+        // Production Railway already uses "my_room" — keep this name
+        my_room: (0, colyseus_1.defineRoom)(MyRoom_1.MyRoom, {
             filterBy: ['channelId'],
         }),
-        // Legacy room name from the old template — same Watch Together room
-        my_room: (0, colyseus_1.defineRoom)(WatchRoom_1.WatchRoom, {
+        watch_room: (0, colyseus_1.defineRoom)(MyRoom_1.MyRoom, {
             filterBy: ['channelId'],
         }),
     },
     express: (app) => {
         app.use(securityHeaders_1.securityHeaders);
         app.use(express_1.default.json({ limit: "16kb" }));
+        app.get("/", (_req, res) => {
+            res.json({ ok: true, service: "watch-together" });
+        });
         app.get("/health", (_req, res) => {
             res.json({
                 ok: true,
