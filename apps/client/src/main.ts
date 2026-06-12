@@ -47,6 +47,15 @@ function showLoading(message: string) {
     });
   } catch (e) {
     console.error("Failed to join room", e);
-    showError("Failed to join watch room. Is the server running?");
+    const msg = e instanceof Error ? e.message : String(e);
+    const needsDeploy =
+      msg.includes("watch_room") ||
+      msg.includes("not defined") ||
+      msg.includes("520");
+    showError(
+      needsDeploy
+        ? "Server is outdated — redeploy Railway from the latest GitHub code, then try again."
+        : `Failed to join watch room: ${msg}`
+    );
   }
 })();
