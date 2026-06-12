@@ -4,7 +4,7 @@ services:
     runtime: node
     rootDir: apps/server
     buildCommand: npm install && npm run build
-    startCommand: npm run start:prod
+    startCommand: node build/index.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV

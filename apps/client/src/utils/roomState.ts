@@ -49,5 +49,5 @@ export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 5000):
 }
 
 export function getWatchRoomErrorMessage(): string {
-  return "Server is still on the old game build. In Railway: set Root Directory to apps/server, redeploy latest main, then retry.";
+  return "Server is still on the old game build. In Railway: leave Root Directory empty (repo root), set JWT_SECRET + Discord env vars, redeploy latest main, then retry.";
 }
