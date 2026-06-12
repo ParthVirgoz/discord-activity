@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+        {
+            "source": "/colyseus/:path*",
+            "destination": "https://discord-acitivity.up.railway.app/:path*"
+        }
+    ]
+}

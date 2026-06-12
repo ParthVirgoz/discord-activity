@@ -7,7 +7,7 @@ export default defineConfig({
        * For convenience, forward "/colyseus" requests to the local Colyseus server.
        */
       '/colyseus': {
-        target: 'http://localhost:2567',
+        target: 'https://discord-activity.up.railway.app',
         changeOrigin: true,
         ws: true,
         rewrite: (path) => path.replace(/^\/colyseus/, ''),
