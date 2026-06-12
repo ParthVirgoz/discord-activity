@@ -57,6 +57,9 @@ class MyRoom extends colyseus_1.Room {
     onCreate(options) {
         this.onMessage("move", (client, message) => {
             const player = this.state.players.get(client.sessionId);
+            if (!player) {
+                return;
+            }
             player.position.x = message.x;
             player.position.y = message.y;
         });
