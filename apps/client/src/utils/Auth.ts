@@ -1,11 +1,16 @@
 import { colyseusSDK } from "./Colyseus.js";
-import { DISCORD_CLIENT_ID, discordSDK } from "./DiscordSDK.js";
+import { DISCORD_CLIENT_ID, discordSDK, isEmbedded } from "./DiscordSDK.js";
 
 export async function authenticate() {
   await discordSDK.ready();
 
-  // Authorize with Discord Client
-  const { code } = await discordSDK.commands.authorize({
+  let code: string;
+
+  if (!isEmbedded) {
+    // Local browser dev — server accepts mock_code only in non-production
+    code = "mock_code";
+  } else {
+    const result = await discordSDK.commands.authorize({
     client_id: DISCORD_CLIENT_ID,
     response_type: 'code',
     state: '',
@@ -36,9 +41,11 @@ export async function authenticate() {
       'rpc.voice.read',
       // "webhook.incoming",
     ],
-  });
+    });
+    code = result.code;
+  }
 
-  // Retrieve an token and userdata from your embedded app's server
+  // Retrieve a token and userdata from your embedded app's server
   const { data } = await colyseusSDK.http.post('/discord_token', {
     headers: { 'Content-Type': 'application/json', },
     body: JSON.stringify({ code, }),
@@ -48,11 +55,9 @@ export async function authenticate() {
     throw new Error('Check if your "Discord Client ID" and "Secret" are correct in your server-side.');
   }
 
-  //
-  // Authenticate with the token, so we can use the Discord API
-  // This is required to listen to SPEAKING events
-  //
-  await discordSDK.commands.authenticate({ access_token: data.access_token, });
+  if (isEmbedded) {
+    await discordSDK.commands.authenticate({ access_token: data.access_token });
+  }
 
   return data;
 }

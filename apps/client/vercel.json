@@ -1,8 +1,34 @@
 {
+    "buildCommand": "npm run build",
+    "outputDirectory": "dist",
+    "framework": "vite",
+    "headers": [
+        {
+            "source": "/(.*)",
+            "headers": [
+                {
+                    "key": "Content-Security-Policy",
+                    "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.youtube.com https://s.ytimg.com; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; connect-src 'self' https: wss:; frame-src https://www.youtube.com https://www.youtube-nocookie.com; font-src 'self' data:;"
+                },
+                {
+                    "key": "X-Content-Type-Options",
+                    "value": "nosniff"
+                },
+                {
+                    "key": "Referrer-Policy",
+                    "value": "strict-origin-when-cross-origin"
+                }
+            ]
+        }
+    ],
     "rewrites": [
         {
             "source": "/colyseus/:path*",
-            "destination": "https://discord-acitivity.up.railway.app/:path*"
+            "destination": "https://discord-activity.up.railway.app/:path*"
+        },
+        {
+            "source": "/api/:path*",
+            "destination": "https://discord-activity.up.railway.app/api/:path*"
         }
     ]
 }

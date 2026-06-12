@@ -2,27 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Colyseus + Discord (Vite + TS)</title>
-
-    <!--
-      The JavaScript code below dynamically set ".proxy/" as base url.
-      This is meant to allow testing the app both locally and on from the Discord Activity iframe.
-
-      If you're making a specific build for Discord Activities, you can use the tag directly instead:
-
-        <base href=".proxy" />
-    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.youtube.com https://s.ytimg.com; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:*; frame-src https://www.youtube.com https://www.youtube-nocookie.com; font-src 'self' data:;"
+    />
+    <title>Watch Together</title>
     <script type="text/javascript">
       if (window.location.href.includes(".discordsays.com")) {
         document.write('<base href=".proxy/" />');
       }
     </script>
-    <!-- / -->
-
   </head>
   <body>
+    <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

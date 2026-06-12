@@ -1,16 +1,25 @@
-import { Schema, type, MapSchema } from "@colyseus/schema";
+import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
 
-export class Vec2 extends Schema {
-  @type("number") x = 0;
-  @type("number") y = 0;
+export class QueueItem extends Schema {
+  @type("string") videoId = "";
+  @type("string") title = "";
+  @type("string") addedBy = "";
 }
 
-export class Player extends Schema {
+export class Member extends Schema {
   @type("string") username = "";
-  @type("number") heroType = 0;
-  @type(Vec2) position = new Vec2();
+  @type("string") avatarUrl = "";
+  @type("string") discordId = "";
 }
 
-export class MyRoomState extends Schema {
-  @type({ map: Player }) players = new MapSchema<Player>();
+export class WatchRoomState extends Schema {
+  @type("string") hostSessionId = "";
+  @type("string") videoId = "";
+  @type("string") videoTitle = "";
+  @type("number") currentTime = 0;
+  @type("boolean") isPlaying = false;
+  @type("number") playbackRate = 1;
+  @type("number") lastUpdatedAt = 0;
+  @type({ array: QueueItem }) queue = new ArraySchema<QueueItem>();
+  @type({ map: Member }) members = new MapSchema<Member>();
 }

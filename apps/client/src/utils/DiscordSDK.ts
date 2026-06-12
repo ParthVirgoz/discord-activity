@@ -21,11 +21,11 @@ if (isEmbedded) {
     const currentStoredValue = sessionStorage.getItem(queryParam);
     if (currentStoredValue != null) { return currentStoredValue; }
 
-    // Set queryParam to a random 8-character string
-    const randomString = Math.random().toString(36).slice(2, 10);
-    sessionStorage.setItem(queryParam, randomString);
+    // Discord snowflakes are numeric — use random 18-digit IDs for local testing
+    const randomSnowflake = String(Math.floor(1e17 + Math.random() * 9e17));
+    sessionStorage.setItem(queryParam, randomSnowflake);
 
-    return randomString;
+    return randomSnowflake;
   }
 
   // We're using session storage for "user_id" and "guild_id"
@@ -36,8 +36,7 @@ if (isEmbedded) {
   // this will override this will override the session user_id value
   const mockUserId = getOverrideOrRandomSessionValue('user_id');
   const mockGuildId = getOverrideOrRandomSessionValue('guild_id');
-  const mockChannelId = 'dummyChannelId';
-  // const mockChannelId = getOverrideOrRandomSessionValue('channel_id');
+  const mockChannelId = getOverrideOrRandomSessionValue('channel_id');
 
   discordSDK = new DiscordSDKMock(DISCORD_CLIENT_ID, mockGuildId, mockChannelId, 'en');
   const discriminator = String(mockUserId.charCodeAt(0) % 5);
