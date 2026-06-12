@@ -16,6 +16,10 @@ export default defineServer({
         watch_room: defineRoom(WatchRoom, {
             filterBy: ['channelId'],
         } as { channelId?: string }),
+        // Legacy room name from the old template — same Watch Together room
+        my_room: defineRoom(WatchRoom, {
+            filterBy: ['channelId'],
+        } as { channelId?: string }),
     },
 
     express: (app) => {

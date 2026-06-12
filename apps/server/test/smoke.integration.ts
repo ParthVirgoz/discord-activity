@@ -1,6 +1,6 @@
 /**
  * Integration smoke test — run against a live server:
- *   npx tsx test/smoke_test.ts [baseUrl]
+ *   npx tsx test/smoke.integration.ts [baseUrl]
  * Default: http://localhost:2567
  */
 import assert from "assert";

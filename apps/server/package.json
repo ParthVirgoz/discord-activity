@@ -14,8 +14,8 @@
     "build": "npm run clean && tsc",
     "clean": "rimraf build",
     "test": "mocha -r tsx test/**_test.ts --exit --timeout 15000",
-    "test:smoke": "tsx test/smoke_test.ts",
-    "test:smoke:prod": "tsx test/smoke_test.ts https://discord-activity.up.railway.app"
+    "test:smoke": "tsx test/smoke.integration.ts",
+    "test:smoke:prod": "tsx test/smoke.integration.ts https://discord-activity.up.railway.app"
   },
   "author": "",
   "license": "UNLICENSED",

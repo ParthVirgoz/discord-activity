@@ -1,0 +1,10 @@
+node_modules
+apps/client/node_modules
+apps/server/node_modules
+dist
+apps/client/dist
+apps/server/build
+.git
+.env
+.env.*
+*.log
