@@ -12,6 +12,7 @@
     "build": "npm run build -w server && npm run build -w client",
     "test": "npm test -w server && npm test -w client",
     "verify:local": "bash scripts/verify-local.sh",
+    "check:production": "bash scripts/check-production.sh",
     "cloudflared": "cloudflared tunnel --url http://localhost:5173"
   },
   "author": "",
