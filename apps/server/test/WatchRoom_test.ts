@@ -20,7 +20,7 @@ describe("WatchRoom", () => {
   beforeEach(async () => colyseus.cleanup());
 
   it("creates room and assigns first joiner as host", async () => {
-    const room = await colyseus.createRoom<WatchRoomState>("watch_room", {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
     const client = await connectAs(colyseus, room, "alice");
@@ -31,7 +31,7 @@ describe("WatchRoom", () => {
   });
 
   it("rejects invalid channelId on join", async () => {
-    const room = await colyseus.createRoom<WatchRoomState>("watch_room", {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
 
@@ -46,7 +46,7 @@ describe("WatchRoom", () => {
   });
 
   it("only host can load video", async () => {
-    const room = await colyseus.createRoom<WatchRoomState>("watch_room", {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
     const host = await connectAs(colyseus, room, "host");
@@ -63,7 +63,7 @@ describe("WatchRoom", () => {
   });
 
   it("transfers host when host leaves", async () => {
-    const room = await colyseus.createRoom<WatchRoomState>("watch_room", {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
     const host = await connectAs(colyseus, room, "host");
@@ -77,7 +77,7 @@ describe("WatchRoom", () => {
   });
 
   it("batch adds valid videos to queue", async () => {
-    const room = await colyseus.createRoom<WatchRoomState>("watch_room", {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
     const host = await connectAs(colyseus, room, "host");
@@ -95,7 +95,7 @@ describe("WatchRoom", () => {
   });
 
   it("rejects invalid video IDs", async () => {
-    const room = await colyseus.createRoom<WatchRoomState>("watch_room", {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
     const host = await connectAs(colyseus, room, "host");

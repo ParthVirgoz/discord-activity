@@ -11,6 +11,22 @@ function showError(message: string) {
   appRoot.innerHTML = `<div class="error-screen"><p>${message}</p></div>`;
 }
 
+async function joinWatchRoom() {
+  const roomNames = ["my_room", "watch_room"];
+  let lastError: unknown;
+  for (const roomName of roomNames) {
+    try {
+      return await colyseusSDK.joinOrCreate<WatchRoomState>(roomName, {
+        channelId: discordSDK.channelId,
+      });
+    } catch (e) {
+      lastError = e;
+      console.warn(`joinOrCreate(${roomName}) failed:`, e);
+    }
+  }
+  throw lastError;
+}
+
 function showLoading(message: string) {
   appRoot.innerHTML = `
     <div class="loading-screen">
@@ -35,9 +51,7 @@ function showLoading(message: string) {
   try {
     showLoading("Joining your voice channel room…");
 
-    const room = await colyseusSDK.joinOrCreate<WatchRoomState>("watch_room", {
-      channelId: discordSDK.channelId,
-    });
+    const room = await joinWatchRoom();
 
     appRoot.innerHTML = "";
     new WatchApp(room, appRoot);

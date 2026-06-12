@@ -48,7 +48,7 @@ async function main() {
   const client = new Client(WS_BASE);
   client.auth.token = token;
 
-  const room = await client.joinOrCreate<WatchRoomState>("watch_room", {
+  const room = await client.joinOrCreate<WatchRoomState>("my_room", {
     channelId: CHANNEL,
   });
   assert.ok(room.sessionId);

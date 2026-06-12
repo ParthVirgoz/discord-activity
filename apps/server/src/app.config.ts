@@ -7,17 +7,17 @@ import express from "express";
 /**
  * Import your Room files
  */
-import { WatchRoom } from "./rooms/WatchRoom";
+import { MyRoom } from "./rooms/MyRoom";
 import youtubeRoutes from "./routes/youtube";
 import { securityHeaders } from "./utils/securityHeaders";
 
 export default defineServer({
     rooms: {
-        watch_room: defineRoom(WatchRoom, {
+        // Production Railway already uses "my_room" — keep this name
+        my_room: defineRoom(MyRoom, {
             filterBy: ['channelId'],
         } as { channelId?: string }),
-        // Legacy room name from the old template — same Watch Together room
-        my_room: defineRoom(WatchRoom, {
+        watch_room: defineRoom(MyRoom, {
             filterBy: ['channelId'],
         } as { channelId?: string }),
     },
