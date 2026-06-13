@@ -1,3 +1,5 @@
+import { getYouTubeThumbnailUrl } from "./discordUrls.js";
+
 const YOUTUBE_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
 
 const URL_PATTERNS = [
@@ -102,7 +104,7 @@ export function formatDurationSeconds(seconds: number): string {
 }
 
 export function getYouTubeThumbnail(videoId: string): string {
-  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
+  return getYouTubeThumbnailUrl(videoId);
 }
 
 export async function fetchVideoTitle(videoId: string): Promise<string> {

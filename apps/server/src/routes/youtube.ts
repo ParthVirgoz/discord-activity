@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../middleware/requireAuth";
 import { checkRateLimit } from "../utils/rateLimit";
+import { isValidVideoId } from "../utils/validation";
 import {
   searchVideos,
   importPlaylist,
@@ -9,6 +10,32 @@ import {
 } from "../services/youtube";
 
 const router = Router();
+
+router.get("/thumbnail/:videoId", async (req, res) => {
+  const videoId = req.params.videoId;
+  if (!isValidVideoId(videoId)) {
+    res.status(400).end();
+    return;
+  }
+
+  try {
+    const upstream = await fetch(`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, {
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!upstream.ok) {
+      res.status(upstream.status).end();
+      return;
+    }
+
+    const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch {
+    res.status(502).end();
+  }
+});
 
 const SEARCH_LIMIT = 20;
 const SEARCH_WINDOW_MS = 60_000;

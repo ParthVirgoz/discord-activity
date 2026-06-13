@@ -5,6 +5,7 @@ export default defineConfig(({ mode }) => {
   const colyseusTarget = env.VITE_COLYSEUS_PROXY || 'http://localhost:2567';
 
   return {
+    base: "./",
     server: {
       host: true,
       allowedHosts: true,

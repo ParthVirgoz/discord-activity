@@ -1,3 +1,5 @@
+import { isDiscordActivity, getYouTubeEmbedBase } from "./discordUrls.js";
+
 /** True when the page is served from a raw IP — YouTube often blocks music/copyright embeds in that case. */
 export function isRawIpHost(
   hostname = typeof window !== "undefined" ? window.location.hostname : ""
@@ -9,27 +11,21 @@ export function isRawIpHost(
   return false;
 }
 
-/** True when running inside Discord's activity iframe (discordsays.com). */
-export function isDiscordActivity(
-  hostname = typeof window !== "undefined" ? window.location.hostname : "",
-  search = typeof window !== "undefined" ? window.location.search : ""
-): boolean {
-  if (hostname.includes("discordsays.com")) return true;
-  return new URLSearchParams(search).has("frame_id");
-}
+export { isDiscordActivity } from "./discordUrls.js";
 
 export function buildYouTubeEmbedUrl(
   videoId: string,
   startSec: number,
   autoplay: boolean,
-  embedHost: "youtube" | "nocookie" = isDiscordActivity() ? "nocookie" : "youtube",
+  embedHost?: "youtube" | "nocookie",
   pageOrigin = typeof window !== "undefined" ? window.location.origin : "",
   pageHref = typeof window !== "undefined" ? window.location.href : ""
 ): string {
-  const base =
-    embedHost === "nocookie"
-      ? "https://www.youtube-nocookie.com"
-      : "https://www.youtube.com";
+  const base = isDiscordActivity()
+    ? getYouTubeEmbedBase()
+    : embedHost === "youtube"
+      ? "https://www.youtube.com"
+      : "https://www.youtube-nocookie.com";
 
   const params = new URLSearchParams({
     start: String(Math.max(0, Math.floor(startSec))),

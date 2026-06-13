@@ -1,5 +1,8 @@
 import "./style.css";
+import { setupDiscordNetworking } from "./utils/setupDiscordNetworking.js";
 import { discordSDK } from "./utils/DiscordSDK.js";
+
+setupDiscordNetworking();
 import { colyseusSDK } from "./utils/Colyseus.js";
 import type { WatchRoomState } from "./schema.js";
 import { authenticate } from "./utils/Auth.js";
@@ -58,7 +61,7 @@ function showLoading(message: string) {
     appRoot.innerHTML = "";
     new WatchApp(room, appRoot);
 
-    room.onLeave((code) => {
+    room.onLeave((code: number) => {
       console.log("Left room:", code);
     });
   } catch (e) {

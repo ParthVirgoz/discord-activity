@@ -5,6 +5,10 @@
  */
 
 import { buildYouTubeEmbedUrl } from "../utils/youtubeEmbed.js";
+import {
+  getYouTubeEmbedMessageOrigins,
+  getYouTubeEmbedPostMessageTarget,
+} from "../utils/discordUrls.js";
 
 export type YtPlayerState =
   | "unstarted"
@@ -36,8 +40,13 @@ export type PlayerEventHandler = {
   onError?: (errorCode: number) => void;
 };
 
-const YT_ORIGIN = "https://www.youtube.com";
-const YT_NOCOOKIE_ORIGIN = "https://www.youtube-nocookie.com";
+function acceptedMessageOrigins(): string[] {
+  return getYouTubeEmbedMessageOrigins();
+}
+
+function postMessageTarget(): string {
+  return getYouTubeEmbedPostMessageTarget();
+}
 
 function buildEmbedUrl(videoId: string, startSec: number, autoplay: boolean): string {
   return buildYouTubeEmbedUrl(videoId, startSec, autoplay);
@@ -116,7 +125,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     if (!this.iframe.contentWindow) return;
     this.iframe.contentWindow.postMessage(
       JSON.stringify({ event: "listening", id: this.iframe.id, channel: "widget" }),
-      YT_ORIGIN
+      postMessageTarget()
     );
   }
 
@@ -140,7 +149,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
   }
 
   private handleMessage(event: MessageEvent) {
-    if (event.origin !== YT_ORIGIN && event.origin !== YT_NOCOOKIE_ORIGIN) return;
+    if (!acceptedMessageOrigins().includes(event.origin)) return;
     if (event.source !== this.iframe.contentWindow) return;
 
     let data: Record<string, unknown>;
@@ -182,7 +191,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     if (!this.iframe.contentWindow) return;
     this.iframe.contentWindow.postMessage(
       JSON.stringify({ event: "command", func, args }),
-      YT_ORIGIN
+      postMessageTarget()
     );
   }
 
