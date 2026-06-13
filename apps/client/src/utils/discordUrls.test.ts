@@ -23,10 +23,10 @@ describe("discordUrls", () => {
     vi.stubGlobal("window", {
       location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
     });
-    expect(getServerProxyPrefix()).toBe("/.proxy/colyseus");
-    expect(getYouTubeEmbedBase()).toBe("/.proxy/youtube-nocookie");
+    expect(getServerProxyPrefix()).toBe("/colyseus");
+    expect(getYouTubeEmbedBase()).toBe("/youtube-nocookie");
     expect(getYouTubeThumbnailUrl("dQw4w9WgXcQ")).toBe(
-      "/.proxy/colyseus/api/youtube/thumbnail/dQw4w9WgXcQ"
+      "/colyseus/api/youtube/thumbnail/dQw4w9WgXcQ"
     );
   });
 

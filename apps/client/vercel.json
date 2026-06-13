@@ -23,12 +23,8 @@
     ],
     "rewrites": [
         {
-            "source": "/.proxy/youtube-nocookie/:path*",
+            "source": "/youtube-nocookie/:path*",
             "destination": "https://www.youtube-nocookie.com/:path*"
-        },
-        {
-            "source": "/.proxy/colyseus/:path*",
-            "destination": "https://discord-activity.up.railway.app/:path*"
         },
         {
             "source": "/colyseus/:path*",
