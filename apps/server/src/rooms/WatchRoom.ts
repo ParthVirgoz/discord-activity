@@ -1,5 +1,5 @@
 import { JWT } from "@colyseus/auth";
-import { Room, Client } from "colyseus";
+import { Room, Client, CloseCode } from "colyseus";
 import { Schema, MapSchema, ArraySchema, type } from "@colyseus/schema";
 import {
   isValidChannelId,
@@ -398,6 +398,7 @@ export class WatchRoom extends Room {
       throw new Error("Invalid channelId");
     }
     this.channelId = options.channelId;
+    this.autoDispose = false;
 
     this.setSimulationInterval(() => {
       this.maybeAdvanceAtEnd();
@@ -713,9 +714,20 @@ export class WatchRoom extends Room {
     });
   }
 
-  onLeave(client: Client) {
-    this.state.members.delete(client.sessionId);
+  async onLeave(client: Client, code: number) {
     this.lastMessageAt.delete(client.sessionId);
+
+    try {
+      if (code === CloseCode.CONSENTED) {
+        throw new Error("consented leave");
+      }
+      await this.allowReconnection(client, 120);
+      return;
+    } catch {
+      /* consented leave or reconnection window expired */
+    }
+
+    this.state.members.delete(client.sessionId);
 
     if (this.isHost(client)) {
       this.promoteNextHost();

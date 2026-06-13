@@ -12,6 +12,7 @@ import {
 import { iconHtml } from "../utils/icons.js";
 import { toast, type ToastType } from "../utils/toast.js";
 import { isDiscordActivity } from "../utils/discordUrls.js";
+import { configureRoomResilience, startRoomKeepAlive } from "../utils/roomConnection.js";
 
 const DRIFT_CHECK_INTERVAL_MS = 5000;
 const END_CHECK_INTERVAL_MS = 2000;
@@ -63,6 +64,7 @@ export class WatchApp {
   private suppressStateBroadcast = 0;
   private ignoreRemotePlaybackUntil = 0;
   private lastVideoChangeAt = 0;
+  private keepAliveStop: (() => void) | null = null;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
@@ -636,12 +638,30 @@ export class WatchApp {
   }
 
   private bindConnectionHandlers() {
+    configureRoomResilience(this.room);
+    this.keepAliveStop = startRoomKeepAlive(this.room);
+
+    this.room.onDrop(() => {
+      this.setConnectionStatus("connecting");
+    });
+
+    this.room.onReconnect(() => {
+      this.setConnectionStatus("connected");
+      this.pendingForceSync = true;
+      this.room.send("syncRequest", {});
+    });
+
     this.room.onLeave((code) => {
       this.setConnectionStatus("disconnected");
+      if (this.room.reconnection.isReconnecting) return;
       this.showStatus(`Disconnected (code ${code}). Re-open the Activity to reconnect.`, true);
     });
 
     this.room.onError((code, message) => {
+      if (this.room.reconnection.isReconnecting) {
+        this.setConnectionStatus("connecting");
+        return;
+      }
       this.setConnectionStatus("disconnected");
       this.showStatus(`Connection error (${code}): ${message ?? "Unknown"}`, true);
     });
@@ -1704,6 +1724,8 @@ export class WatchApp {
     if (this.keyboardHandler) {
       document.removeEventListener("keydown", this.keyboardHandler, true);
     }
+    this.keepAliveStop?.();
+    this.keepAliveStop = null;
     if (this.controlsTimer) clearInterval(this.controlsTimer);
     this.clearUnavailableCheck();
     if (this.syncTimer) clearInterval(this.syncTimer);

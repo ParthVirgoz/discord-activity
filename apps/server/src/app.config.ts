@@ -1,4 +1,4 @@
-import { defineServer, defineRoom } from "colyseus";
+import { defineServer, defineRoom, WebSocketTransport } from "colyseus";
 import { monitor } from "@colyseus/monitor";
 import { playground } from "@colyseus/playground";
 import { JWT } from "@colyseus/auth";
@@ -21,6 +21,12 @@ export default defineServer({
             filterBy: ['channelId'],
         } as { channelId?: string }),
     },
+
+    /** Discord Activities background tabs may miss WS pings — use a lenient heartbeat. */
+    transport: new WebSocketTransport({
+        pingInterval: 20_000,
+        pingMaxRetries: 12,
+    }),
 
     express: (app) => {
         app.use(securityHeaders);

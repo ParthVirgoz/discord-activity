@@ -8,6 +8,7 @@ import type { WatchRoomState } from "./schema.js";
 import { authenticate } from "./utils/Auth.js";
 import { WatchApp } from "./ui/WatchApp.js";
 import { waitForWatchState, getWatchRoomErrorMessage } from "./utils/roomState.js";
+import { configureRoomResilience } from "./utils/roomConnection.js";
 
 const appRoot = document.getElementById("app")!;
 
@@ -56,6 +57,7 @@ function showLoading(message: string) {
     showLoading("Joining your voice channel room…");
 
     const room = await joinWatchRoom();
+    configureRoomResilience(room);
     await waitForWatchState(room);
 
     appRoot.innerHTML = "";

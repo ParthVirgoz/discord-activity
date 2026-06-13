@@ -24,6 +24,11 @@ exports.default = (0, colyseus_1.defineServer)({
             filterBy: ['channelId'],
         }),
     },
+    /** Discord Activities background tabs may miss WS pings — use a lenient heartbeat. */
+    transport: new colyseus_1.WebSocketTransport({
+        pingInterval: 20_000,
+        pingMaxRetries: 12,
+    }),
     express: (app) => {
         app.use(securityHeaders_1.securityHeaders);
         app.use(express_1.default.json({ limit: "16kb" }));
