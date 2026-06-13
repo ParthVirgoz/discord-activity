@@ -74,9 +74,38 @@ describe("WatchRoom", () => {
     await room.waitForNextPatch();
 
     assert.strictEqual(room.state.hostSessionId, host.sessionId);
-    await host.leave();
+    await host.leave(4000);
     await room.waitForNextPatch();
     assert.strictEqual(room.state.hostSessionId, viewer.sessionId);
+  });
+
+  it("preserves playlist when a viewer rejoins the same room", async () => {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
+      channelId: TEST_CHANNEL,
+    });
+    const host = await connectAs(colyseus, room, "host");
+    host.send("addBatchToQueue", {
+      items: [
+        { videoId: "dQw4w9WgXcQ", title: "One", durationSec: 212 },
+        { videoId: "9bZkp7q19f0", title: "Two", durationSec: 200 },
+      ],
+    });
+    await room.waitForNextPatch();
+    assert.strictEqual(room.state.queue.length, 2);
+    const videoId = room.state.videoId;
+
+    const viewer = await connectAs(colyseus, room, "viewer");
+    await room.waitForNextPatch();
+    await viewer.leave(4000);
+    await room.waitForNextPatch();
+
+    const rejoined = await connectAs(colyseus, room, "viewer_return");
+    await room.waitForNextPatch();
+
+    assert.strictEqual(room.state.queue.length, 2);
+    assert.strictEqual(room.state.videoId, videoId);
+    assert.strictEqual(room.state.members.size, 2);
+    await rejoined.leave();
   });
 
   it("transfers host when current host picks another viewer", async () => {

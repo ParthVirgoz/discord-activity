@@ -80,6 +80,8 @@ export class WatchApp {
   private activeSheet: "playlist" | "search" | "viewers" | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private videoLoadRetries = new Map<string, number>();
+  /** Suppress load/skip toasts when advancing past an unavailable video. */
+  private suppressPlaybackToasts = false;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
     this.room = room;
@@ -89,7 +91,7 @@ export class WatchApp {
     this.bindStateListeners();
     this.bindConnectionHandlers();
     this.setConnectionStatus("connected");
-    this.updatePermissionUI();
+    this.bootstrapSession();
   }
 
   private canEditQueue(): boolean {
@@ -777,9 +779,26 @@ export class WatchApp {
   }
 
   private showStatus(message: string, type: ToastType | boolean = "info") {
+    if (this.suppressPlaybackToasts) return;
     const resolved: ToastType =
       typeof type === "boolean" ? (type ? "error" : "success") : type;
     toast.show(message, resolved);
+  }
+
+  /** Sync UI + playback from authoritative room state (join, reconnect, rejoin). */
+  private bootstrapSession() {
+    const isHost = this.room.state.hostSessionId === this.room.sessionId;
+    this.setHostUI(isHost);
+    this.lastSync = this.buildSyncFromRoom();
+    this.refreshUI();
+
+    if (!this.syncTimer) this.startSyncTimer();
+    if (!this.endCheckTimer) this.startEndDetection();
+    if (!this.controlsTimer) this.startControlsTimer();
+
+    void this.applySync(this.lastSync, true);
+    this.pendingForceSync = true;
+    safeRoomSend(this.room, "syncRequest");
   }
 
   private setConnectionStatus(state: "connected" | "connecting" | "disconnected") {
@@ -835,11 +854,9 @@ export class WatchApp {
 
   private recoverFromDisconnect() {
     this.ignoreRemotePlaybackUntil = 0;
-    this.pendingForceSync = true;
-    if (safeRoomSend(this.room, "syncRequest")) return;
-    if (this.player && this.room.state.videoId) {
-      void this.applySync(this.buildSyncFromRoom(), true);
-    }
+    this.reconnectInFlight = false;
+    this.setConnectionStatus("connected");
+    this.bootstrapSession();
   }
 
   private async attemptRoomRejoin(code: number) {
@@ -858,6 +875,7 @@ export class WatchApp {
           });
           configureRoomResilience(newRoom);
           await waitForWatchState(newRoom);
+          await new Promise((r) => requestAnimationFrame(() => r(undefined)));
           this.destroy();
           new WatchApp(newRoom, this.root);
           return;
@@ -1133,7 +1151,9 @@ export class WatchApp {
     if (attempts < MAX_VIDEO_LOAD_RETRIES) {
       this.videoLoadRetries.set(videoId, attempts + 1);
       this.unavailableSentForVideoId = "";
-      toast.show("Video is loading slowly — retrying…", "warning");
+      if (!this.suppressPlaybackToasts) {
+        toast.show("Video is loading slowly — retrying…", "warning");
+      }
 
       await new Promise((r) => setTimeout(r, 2000));
       if (this.room.state.videoId !== videoId) return;
@@ -1201,6 +1221,7 @@ export class WatchApp {
 
     this.unavailableSentForVideoId = videoId;
     this.videoEndedSent = true;
+    this.suppressPlaybackToasts = true;
     this.clearUnavailableCheck();
 
     this.room.send("videoUnavailable", { errorCode: errorCode ?? 0 });
@@ -1281,10 +1302,18 @@ export class WatchApp {
       this.setHostUI(data.isHost);
       this.lastSync = data.sync;
       this.refreshUI();
-      this.applySync(data.sync, true);
-      this.startSyncTimer();
-      this.startEndDetection();
-      this.startControlsTimer();
+      void this.applySync(data.sync, true);
+      if (!this.syncTimer) this.startSyncTimer();
+      if (!this.endCheckTimer) this.startEndDetection();
+      if (!this.controlsTimer) this.startControlsTimer();
+      this.pendingForceSync = true;
+      safeRoomSend(this.room, "syncRequest");
+    });
+
+    this.room.onMessage("videoSkipped", (data: { reason?: string }) => {
+      if (data.reason === "unavailable") {
+        this.suppressPlaybackToasts = true;
+      }
     });
 
     this.room.onMessage("play", (data: { currentTime: number; fromSessionId?: string }) => {
@@ -1349,7 +1378,9 @@ export class WatchApp {
       this.lastVideoChangeAt = Date.now();
       this.clearUnavailableCheck();
       this.lastSync = sync;
-      void this.applyVideoChange(sync);
+      void this.applyVideoChange(sync).finally(() => {
+        this.suppressPlaybackToasts = false;
+      });
     });
 
     this.room.onMessage("sync", (sync: SyncPayload) => {
@@ -1815,8 +1846,8 @@ export class WatchApp {
     }
 
     await this.ensurePlayer(sync.videoId, {
-      startTime: 0,
-      autoplay: false,
+      startTime: sync.currentTime,
+      autoplay: sync.isPlaying,
     });
 
     if (!this.player || !sync.videoId) return;
@@ -1826,11 +1857,11 @@ export class WatchApp {
     this.lastSync = sync;
 
     if (sync.isPlaying) {
-      this.applyPlay(0);
+      this.applyPlay(sync.currentTime);
       if (this.canControlPlayback()) this.markLocalPlaybackAction();
       this.scheduleUnavailableCheck();
     } else {
-      this.applyPause(0);
+      this.applyPause(sync.currentTime);
     }
 
     this.renderVideoTitle();

@@ -351,13 +351,16 @@ export class WatchRoom extends Room {
 
     this.markPlayingAsUnavailable();
 
+    const skippedVideoId = this.state.videoId;
     const next = this.findNextQueuedItem(playingIdx);
     if (!next) {
       this.clearNowPlaying();
+      this.broadcast("videoSkipped", { reason: "unavailable", videoId: skippedVideoId });
       return;
     }
 
     this.startQueueItem(next, true);
+    this.broadcast("videoSkipped", { reason: "unavailable", videoId: skippedVideoId });
   }
 
   private maybeAdvanceAtEnd(): void {
@@ -725,22 +728,10 @@ export class WatchRoom extends Room {
     });
   }
 
-  async onLeave(client: Client, code: number) {
-    this.lastMessageAt.delete(client.sessionId);
+  private removeMember(sessionId: string, promoteIfStillHost: boolean) {
+    this.state.members.delete(sessionId);
 
-    try {
-      if (code === CloseCode.CONSENTED) {
-        throw new Error("consented leave");
-      }
-      await this.allowReconnection(client, 180);
-      return;
-    } catch {
-      /* consented leave or reconnection window expired */
-    }
-
-    this.state.members.delete(client.sessionId);
-
-    if (this.isHost(client)) {
+    if (promoteIfStillHost && this.state.hostSessionId === sessionId) {
       this.promoteNextHost();
       this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
     }
@@ -748,6 +739,32 @@ export class WatchRoom extends Room {
     if (this.state.members.size === 0) {
       this.disconnect();
     }
+  }
+
+  async onLeave(client: Client, code: number) {
+    this.lastMessageAt.delete(client.sessionId);
+    const sessionId = client.sessionId;
+    const wasHost = this.isHost(client);
+
+    if (code === CloseCode.CONSENTED) {
+      this.removeMember(sessionId, wasHost);
+      return;
+    }
+
+    // Watch Together: hand host to someone else immediately so playback continues.
+    if (wasHost) {
+      this.promoteNextHost();
+      this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+    }
+
+    try {
+      await this.allowReconnection(client, 180);
+      return;
+    } catch {
+      /* reconnection window expired */
+    }
+
+    this.removeMember(sessionId, false);
   }
 
   onDispose() {
