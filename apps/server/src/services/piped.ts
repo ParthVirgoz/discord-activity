@@ -6,12 +6,7 @@ import {
   type SearchResponse,
   type PlaylistResponse,
 } from "./youtubeShared";
-
-const PIPED_INSTANCES = [
-  "https://pipedapi.kavin.rocks",
-  "https://pipedapi.adminforge.de",
-  "https://api.piped.projectsegfau.lt",
-];
+import { PIPED_INSTANCES } from "./pipedInstances";
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CACHE_SIZE = 256;
@@ -59,16 +54,18 @@ interface PipedStreamItem {
 }
 
 export async function pipedFetch(path: string): Promise<Response | null> {
-  for (const base of PIPED_INSTANCES) {
-    try {
-      const res = await fetch(`${base}${path}`, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (res.ok) return res;
-    } catch {
-      // try next instance
-    }
+  const attempts = PIPED_INSTANCES.map(async (base) => {
+    const res = await fetch(`${base}${path}`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    return res;
+  });
+
+  const results = await Promise.allSettled(attempts);
+  for (const result of results) {
+    if (result.status === "fulfilled") return result.value;
   }
   return null;
 }

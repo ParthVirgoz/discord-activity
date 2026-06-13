@@ -11,11 +11,13 @@ import {
 } from "../utils/api.js";
 import { iconHtml } from "../utils/icons.js";
 import { toast, type ToastType } from "../utils/toast.js";
+import { isDiscordActivity } from "../utils/discordUrls.js";
 
 const DRIFT_CHECK_INTERVAL_MS = 5000;
 const END_CHECK_INTERVAL_MS = 2000;
 const SYNC_APPLY_THRESHOLD = 0.5;
-const UNAVAILABLE_CHECK_MS = 2000;
+/** Piped stream lookup + proxy can take 15s+ in Discord — don't mark unavailable too early. */
+const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 35_000 : 8_000;
 
 export interface SyncPayload {
   videoId: string;
@@ -1320,6 +1322,7 @@ export class WatchApp {
         this.player.load(videoId, startTime, autoplay);
         await this.player.waitForReady();
         this.loadedVideoId = videoId;
+        if (autoplay) this.scheduleUnavailableCheck();
       } catch {
         this.showStatus("Failed to load YouTube player. Try another video.", true);
         this.signalVideoUnavailable();
@@ -1334,6 +1337,7 @@ export class WatchApp {
       this.player.load(videoId, startTime, autoplay);
       await this.player.waitForReady();
       this.loadedVideoId = videoId;
+      if (autoplay) this.scheduleUnavailableCheck();
     } catch {
       this.showStatus("Failed to load YouTube player. Try another video.", true);
       this.signalVideoUnavailable();

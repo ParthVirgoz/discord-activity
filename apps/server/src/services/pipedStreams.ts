@@ -15,15 +15,37 @@ interface PipedStreamsResponse {
 const CACHE_TTL_MS = 20 * 60 * 1000;
 const cache = new Map<string, { streamUrl: string; duration: number; expiresAt: number }>();
 
-function pickVideoStream(streams: PipedStream[]): PipedStream | null {
-  const mp4 = streams.filter((s) => s.mimeType?.includes("mp4") || s.url?.includes("mp4"));
-  const pool = mp4.length > 0 ? mp4 : streams;
-  const preferred =
-    pool.find((s) => /360p|480p|720p|medium/i.test(s.quality ?? "")) ?? pool[0];
-  return preferred ?? null;
+function isProgressiveMp4(stream: PipedStream): boolean {
+  const mime = stream.mimeType ?? "";
+  return mime.includes("mp4") && !mime.includes("mpegurl");
 }
 
-export async function resolvePipedPlayback(
+function streamScore(stream: PipedStream): number {
+  const url = stream.url ?? "";
+  const quality = stream.quality ?? "";
+  let score = 0;
+
+  if (isProgressiveMp4(stream)) score += 100;
+  if (/videoplayback|googlevideo|proxy\.piped/i.test(url)) score += 50;
+  if (/odycdn|lbry/i.test(url)) score += 10;
+  if (/720p/i.test(quality)) score += 30;
+  if (/480p/i.test(quality)) score += 25;
+  if (/360p|medium/i.test(quality)) score += 20;
+  if (/240p|144p|small/i.test(quality)) score += 5;
+
+  return score;
+}
+
+function pickVideoStream(streams: PipedStream[]): PipedStream | null {
+  const candidates = streams.filter((s) => s.url);
+  if (candidates.length === 0) return null;
+
+  const progressive = candidates.filter(isProgressiveMp4);
+  const pool = progressive.length > 0 ? progressive : candidates;
+  return pool.sort((a, b) => streamScore(b) - streamScore(a))[0] ?? null;
+}
+
+export async function resolveVideoPlayback(
   videoId: string
 ): Promise<{ streamUrl: string; duration: number } | null> {
   if (!isValidVideoId(videoId)) return null;
@@ -56,6 +78,12 @@ export async function resolvePipedPlayback(
   return { streamUrl: picked.url, duration };
 }
 
-export function clearPipedPlaybackCache(): void {
+/** @deprecated use resolveVideoPlayback */
+export const resolvePipedPlayback = resolveVideoPlayback;
+
+export function clearVideoPlaybackCache(): void {
   cache.clear();
 }
+
+/** @deprecated */
+export const clearPipedPlaybackCache = clearVideoPlaybackCache;

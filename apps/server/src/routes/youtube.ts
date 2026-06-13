@@ -9,7 +9,10 @@ import {
   sanitizeSearchQuery,
   parsePlaylistId,
 } from "../services/youtube";
-import { resolvePipedPlayback } from "../services/pipedStreams";
+import { resolveVideoPlayback } from "../services/pipedStreams";
+
+const STREAM_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 const router = Router();
 
@@ -47,20 +50,25 @@ router.get("/media/:videoId", async (req, res) => {
     return;
   }
 
-  const playback = await resolvePipedPlayback(videoId);
+  const playback = await resolveVideoPlayback(videoId);
   if (!playback) {
     res.status(502).json({ error: "Video stream unavailable" });
     return;
   }
 
   try {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      "User-Agent": STREAM_USER_AGENT,
+      Accept: "*/*",
+      Referer: "https://www.youtube.com/",
+    };
     const range = req.headers.range;
     if (typeof range === "string") headers.Range = range;
 
     const upstream = await fetch(playback.streamUrl, {
       headers,
       signal: AbortSignal.timeout(120_000),
+      redirect: "follow",
     });
 
     if (!upstream.ok && upstream.status !== 206) {

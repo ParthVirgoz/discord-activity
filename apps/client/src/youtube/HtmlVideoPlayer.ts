@@ -2,6 +2,7 @@ import type { VideoPlayer, PlayerEventHandler, YtPlayerState } from "./YouTubePl
 import { getYouTubeMediaUrl, isDiscordActivity } from "../utils/discordUrls.js";
 
 const DISCORD_AUTOPLAY_RETRIES = 8;
+const LOAD_TIMEOUT_MS = 30_000;
 
 export class HtmlVideoPlayer implements VideoPlayer {
   private video: HTMLVideoElement;
@@ -9,6 +10,8 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private ready = false;
   private readyPromise: Promise<void>;
   private resolveReady: (() => void) | null = null;
+  private rejectReady: ((err: Error) => void) | null = null;
+  private loadTimeout: ReturnType<typeof setTimeout> | null = null;
   private lastState: YtPlayerState = "unstarted";
   private wantsPlay = false;
   private autoplayRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -28,17 +31,10 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.video.style.cssText = "width:100%;height:100%;background:#000;object-fit:contain;";
     container.appendChild(this.video);
 
-    this.readyPromise = new Promise((resolve) => {
-      this.resolveReady = resolve;
-    });
+    this.readyPromise = this.createReadyPromise();
 
     this.video.addEventListener("loadedmetadata", () => {
-      if (!this.ready) {
-        this.ready = true;
-        this.onReady?.();
-        this.resolveReady?.();
-        this.resolveReady = null;
-      }
+      this.markReady();
     });
 
     this.video.addEventListener("playing", () => {
@@ -63,8 +59,57 @@ export class HtmlVideoPlayer implements VideoPlayer {
     });
 
     this.video.addEventListener("error", () => {
+      this.failReady(new Error("Video failed to load"));
       this.onError?.(150);
     });
+  }
+
+  private createReadyPromise(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
+    });
+  }
+
+  private resetReadyPromise(): void {
+    this.clearLoadTimeout();
+    this.readyPromise = this.createReadyPromise();
+  }
+
+  private markReady(): void {
+    this.clearLoadTimeout();
+    if (!this.ready) {
+      this.ready = true;
+      this.onReady?.();
+    }
+    this.resolveReady?.();
+    this.resolveReady = null;
+    this.rejectReady = null;
+  }
+
+  private failReady(err: Error): void {
+    this.clearLoadTimeout();
+    this.rejectReady?.(err);
+    this.resolveReady = null;
+    this.rejectReady = null;
+  }
+
+  private clearLoadTimeout(): void {
+    if (this.loadTimeout) {
+      clearTimeout(this.loadTimeout);
+      this.loadTimeout = null;
+    }
+  }
+
+  private scheduleLoadTimeout(): void {
+    this.clearLoadTimeout();
+    this.loadTimeout = setTimeout(() => {
+      this.loadTimeout = null;
+      if (!this.ready) {
+        this.failReady(new Error("Video load timed out"));
+        this.onError?.(150);
+      }
+    }, LOAD_TIMEOUT_MS);
   }
 
   private clearAutoplayRetry(): void {
@@ -106,12 +151,11 @@ export class HtmlVideoPlayer implements VideoPlayer {
     if (videoId !== this.videoId) {
       this.videoId = videoId;
       this.ready = false;
-      this.readyPromise = new Promise((resolve) => {
-        this.resolveReady = resolve;
-      });
+      this.resetReadyPromise();
       this.lastState = "unstarted";
       this.video.src = getYouTubeMediaUrl(videoId);
       this.video.load();
+      this.scheduleLoadTimeout();
     }
 
     const applyStart = () => {
@@ -167,6 +211,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
   destroy(): void {
     this.clearAutoplayRetry();
+    this.clearLoadTimeout();
     this.video.pause();
     this.video.removeAttribute("src");
     this.video.load();
