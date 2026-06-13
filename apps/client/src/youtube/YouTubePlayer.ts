@@ -37,6 +37,8 @@ export type PlayerEventHandler = {
   onReady?: () => void;
   /** Fired when YouTube player state changes (including native in-iframe controls). */
   onStateChange?: (state: YtPlayerState, currentTime: number) => void;
+  /** Fired when video duration becomes known or changes. */
+  onDurationChange?: (durationSec: number) => void;
   /** Fired when YouTube reports a playback error (unavailable, embedding blocked, etc.). */
   onError?: (errorCode: number) => void;
 };
@@ -77,6 +79,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
   private ready = false;
   private suppressEvents = 0;
   private onStateChange?: (state: YtPlayerState, currentTime: number) => void;
+  private onDurationChange?: (durationSec: number) => void;
   private onReady?: () => void;
   private onError?: (errorCode: number) => void;
   private messageHandler: (event: MessageEvent) => void;
@@ -90,6 +93,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
 
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
+    this.onDurationChange = handlers.onDurationChange;
     this.onReady = handlers.onReady;
     this.onError = handlers.onError;
 
@@ -168,7 +172,11 @@ export class PostMessageVideoPlayer implements VideoPlayer {
         this.setReportedTime(info.currentTime);
       }
       if (typeof info.duration === "number" && info.duration > 0) {
+        const prev = this.durationSec;
         this.durationSec = info.duration;
+        if (this.durationSec !== prev) {
+          this.onDurationChange?.(this.durationSec);
+        }
       }
       if (typeof info.playerState === "number") {
         this.applyReportedState(mapPlayerState(info.playerState));

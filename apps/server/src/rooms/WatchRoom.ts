@@ -620,12 +620,13 @@ export class WatchRoom extends Room {
       const durationSec = clampDuration(msg?.durationSec);
       if (durationSec <= 0) return;
 
-      if (this.state.videoDurationSec <= 0) {
+      const current = this.state.videoDurationSec;
+      if (current <= 0 || durationSec > current) {
         this.state.videoDurationSec = durationSec;
       }
 
       const playing = this.state.queue.find((item) => item.status === "playing");
-      if (playing && playing.durationSec <= 0) {
+      if (playing && (playing.durationSec <= 0 || durationSec > playing.durationSec)) {
         playing.durationSec = durationSec;
       }
     });

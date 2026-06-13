@@ -17,11 +17,13 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private autoplayRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private seekResumeCleanup: (() => void) | null = null;
   private onStateChange?: (state: YtPlayerState, currentTime: number) => void;
+  private onDurationChange?: (durationSec: number) => void;
   private onReady?: () => void;
   private onError?: (errorCode: number) => void;
 
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
+    this.onDurationChange = handlers.onDurationChange;
     this.onReady = handlers.onReady;
     this.onError = handlers.onError;
 
@@ -34,9 +36,17 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
     this.readyPromise = this.createReadyPromise();
 
+    const notifyDuration = () => {
+      const duration = this.getDuration();
+      if (duration > 0) this.onDurationChange?.(duration);
+    };
+
     this.video.addEventListener("loadedmetadata", () => {
       this.markReady();
+      notifyDuration();
     });
+
+    this.video.addEventListener("durationchange", notifyDuration);
 
     this.video.addEventListener("playing", () => {
       this.lastState = "playing";

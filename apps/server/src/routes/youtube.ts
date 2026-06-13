@@ -42,6 +42,25 @@ router.get("/thumbnail/:videoId", async (req, res) => {
   }
 });
 
+/** Video metadata (duration from Piped) for timeline / queue stats. */
+router.get("/info/:videoId", async (req, res) => {
+  const videoId = req.params.videoId;
+  if (!isValidVideoId(videoId)) {
+    res.status(400).json({ error: "Invalid video ID" });
+    return;
+  }
+
+  const playback = await resolveVideoPlayback(videoId);
+  if (!playback) {
+    res.status(502).json({ error: "Video info unavailable" });
+    return;
+  }
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.json({ durationSec: playback.duration });
+});
+
 /** Proxied video stream for Discord (iframe YouTube is CSP-blocked). Supports Range for seeking. */
 router.get("/media/:videoId", async (req, res) => {
   const videoId = req.params.videoId;
@@ -83,6 +102,9 @@ router.get("/media/:videoId", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "no-store");
     res.removeHeader("X-Frame-Options");
+    if (playback.duration > 0) {
+      res.setHeader("X-Video-Duration-Sec", String(playback.duration));
+    }
 
     for (const h of ["content-range", "content-length"] as const) {
       const v = upstream.headers.get(h);

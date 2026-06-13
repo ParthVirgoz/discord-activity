@@ -7,6 +7,7 @@ import { isRawIpHost } from "../utils/youtubeEmbed.js";
 import {
   searchYouTube,
   importYouTubePlaylist,
+  fetchVideoDurationSec,
   type YouTubeVideoResult,
 } from "../utils/api.js";
 import { iconHtml } from "../utils/icons.js";
@@ -417,8 +418,46 @@ export class WatchApp {
   private updatePlayerTimeLabels(currentSec: number, durationSec: number) {
     const currentEl = this.root.querySelector("#player-time-current");
     const durationEl = this.root.querySelector("#player-time-duration");
-    if (currentEl) currentEl.textContent = formatDurationSeconds(Math.floor(currentSec));
-    if (durationEl) durationEl.textContent = formatDurationSeconds(Math.floor(durationSec));
+    const currentLabel = formatDurationSeconds(Math.max(0, Math.floor(currentSec))) || "0:00";
+    const durationLabel =
+      durationSec > 0 ? formatDurationSeconds(Math.floor(durationSec)) || "0:00" : "--:--";
+    if (currentEl) currentEl.textContent = currentLabel;
+    if (durationEl) durationEl.textContent = durationLabel;
+  }
+
+  /** Shared room timeline — same for all users while watching together. */
+  private getDisplayCurrentTime(): number {
+    if (this.isScrubbing) {
+      const seek = this.root.querySelector("#player-seek") as HTMLInputElement;
+      return Number(seek?.value ?? 0);
+    }
+
+    if (this.room.state.videoId && this.room.state.lastUpdatedAt > 0) {
+      return this.room.state.isPlaying
+        ? this.getRoomEffectiveTime()
+        : this.room.state.currentTime;
+    }
+
+    return this.player?.getCurrentTime() ?? 0;
+  }
+
+  private getEffectiveVideoDuration(): number {
+    const playerDur = this.player?.getDuration() ?? 0;
+    const roomDur = this.room.state.videoDurationSec;
+
+    let queueDur = 0;
+    this.room.state.queue?.forEach((item) => {
+      if (item.status === "playing" && item.durationSec > queueDur) {
+        queueDur = item.durationSec;
+      }
+    });
+
+    return Math.max(playerDur, roomDur, queueDur);
+  }
+
+  private getSeekBarMax(duration: number, current: number): number {
+    if (duration > 0) return duration;
+    return Math.max(300, current + 60);
   }
 
   private updatePlayerControls() {
@@ -450,17 +489,14 @@ export class WatchApp {
     if (seek) seek.disabled = !canControl;
 
     const duration = this.getEffectiveVideoDuration();
-    const current = this.isScrubbing
-      ? Number(seek?.value ?? 0)
-      : canControl
-        ? this.player.getCurrentTime()
-        : this.getRoomEffectiveTime();
+    const current = this.getDisplayCurrentTime();
+    const seekMax = this.getSeekBarMax(duration, current);
 
-    if (seek && duration > 0 && !this.isScrubbing) {
-      seek.max = String(duration);
-      seek.value = String(Math.min(duration, Math.max(0, current)));
-    } else if (seek && duration > 0 && this.isScrubbing) {
-      seek.max = String(duration);
+    if (seek && !this.isScrubbing) {
+      seek.max = String(seekMax);
+      seek.value = String(Math.min(seekMax, Math.max(0, current)));
+    } else if (seek && this.isScrubbing) {
+      seek.max = String(seekMax);
     }
 
     this.updatePlayerTimeLabels(current, duration);
@@ -609,7 +645,8 @@ export class WatchApp {
       return;
     }
     const title = await fetchVideoTitle(videoId);
-    this.room.send("addToQueue", { videoId, title, durationSec: 0 });
+    const durationSec = await fetchVideoDurationSec(videoId);
+    this.room.send("addToQueue", { videoId, title, durationSec });
     this.getBrowseInput().value = "";
     this.updateBrowseActionButton();
   }
@@ -1001,29 +1038,31 @@ export class WatchApp {
     this.room.send("videoEnded", {});
   }
 
-  private reportDurationToServer() {
-    if (!this.player) return;
-    const duration = this.player.getDuration();
+  private reportDurationToServer(durationSec?: number) {
+    const duration = durationSec ?? this.player?.getDuration() ?? 0;
     if (duration <= 0) return;
-    if (this.room.state.videoDurationSec > 0) return;
+
+    const roomDur = this.room.state.videoDurationSec;
+    if (roomDur > 0 && duration <= roomDur) return;
+
     this.room.send("setVideoDuration", { durationSec: Math.floor(duration) });
   }
 
-  private getEffectiveVideoDuration(): number {
-    if (this.room.state.videoDurationSec > 0) return this.room.state.videoDurationSec;
+  private handlePlayerDurationChange(durationSec: number) {
+    this.reportDurationToServer(durationSec);
+    this.updatePlayerControls();
+    this.renderQueue();
+  }
 
-    const queue = this.room.state.queue;
-    if (queue?.forEach) {
-      let fromQueue = 0;
-      queue.forEach((item) => {
-        if (item.status === "playing" && item.durationSec > 0) {
-          fromQueue = item.durationSec;
-        }
-      });
-      if (fromQueue > 0) return fromQueue;
-    }
-
-    return this.player?.getDuration() ?? 0;
+  private prefetchVideoDuration(videoId: string) {
+    if (!videoId) return;
+    void fetchVideoDurationSec(videoId).then((durationSec) => {
+      if (durationSec > 0 && this.room.state.videoId === videoId) {
+        this.reportDurationToServer(durationSec);
+        this.updatePlayerControls();
+        this.renderQueue();
+      }
+    });
   }
 
   private bindRoomMessages() {
@@ -1171,6 +1210,10 @@ export class WatchApp {
     listen(state, "isPlaying", schedule, false);
     listen(state, "currentTime", schedule, false);
     listen(state, "lastUpdatedAt", schedule, false);
+    listen(state, "videoDurationSec", () => {
+      this.updatePlayerControls();
+      this.renderQueue();
+    }, false);
   }
 
   private schedulePlaybackStateSync() {
@@ -1566,6 +1609,8 @@ export class WatchApp {
 
     if (!this.player || !sync.videoId) return;
 
+    this.prefetchVideoDuration(sync.videoId);
+
     this.lastSync = sync;
 
     if (sync.isPlaying) {
@@ -1600,11 +1645,14 @@ export class WatchApp {
       try {
         this.player = await createYouTubePlayer("yt-iframe-target", {
           onStateChange: (state, currentTime) => this.handlePlayerStateChange(state, currentTime),
+          onDurationChange: (durationSec) => this.handlePlayerDurationChange(durationSec),
           onError: (code) => this.handlePlayerError(code),
         });
         this.player.load(videoId, startTime, autoplay);
         await this.player.waitForReady();
         this.loadedVideoId = videoId;
+        this.prefetchVideoDuration(videoId);
+        this.reportDurationToServer();
         if (autoplay) this.scheduleUnavailableCheck();
       } catch {
         this.showStatus("Failed to load YouTube player. Try another video.", true);
@@ -1620,6 +1668,8 @@ export class WatchApp {
       this.player.load(videoId, startTime, autoplay);
       await this.player.waitForReady();
       this.loadedVideoId = videoId;
+      this.prefetchVideoDuration(videoId);
+      this.reportDurationToServer();
       if (autoplay) this.scheduleUnavailableCheck();
     } catch {
       this.showStatus("Failed to load YouTube player. Try another video.", true);
@@ -1636,6 +1686,8 @@ export class WatchApp {
       autoplay: false,
     });
     if (!this.player || !sync.videoId) return;
+
+    this.prefetchVideoDuration(sync.videoId);
 
     this.lastSync = sync;
     const localTime = this.player.getCurrentTime();
@@ -1752,7 +1804,7 @@ export class WatchApp {
       const duration = this.getEffectiveVideoDuration();
       if (duration <= 0) return;
 
-      const current = this.player.getCurrentTime();
+      const current = this.getDisplayCurrentTime();
       if (current >= duration - 1.5) {
         this.signalVideoEnded();
       }

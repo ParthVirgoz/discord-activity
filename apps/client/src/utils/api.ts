@@ -1,4 +1,5 @@
 import { colyseusSDK } from "./Colyseus.js";
+import { getServerProxyPrefix } from "./discordUrls.js";
 
 export interface YouTubeVideoResult {
   videoId: string;
@@ -52,4 +53,18 @@ export async function importYouTubePlaylist(
     params.set("list", listOrUrl);
   }
   return apiGet<PlaylistResponse>(`/api/youtube/playlist?${params}`);
+}
+
+export async function fetchVideoDurationSec(videoId: string): Promise<number> {
+  try {
+    const url = `${getServerProxyPrefix()}/api/youtube/info/${encodeURIComponent(videoId)}`;
+    const res = await fetch(url);
+    if (!res.ok) return 0;
+    const data = (await res.json()) as { durationSec?: number };
+    return typeof data.durationSec === "number" && data.durationSec > 0
+      ? Math.floor(data.durationSec)
+      : 0;
+  } catch {
+    return 0;
+  }
 }
