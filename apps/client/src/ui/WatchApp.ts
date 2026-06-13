@@ -14,9 +14,9 @@ import { iconHtml } from "../utils/icons.js";
 import { toast, type ToastType } from "../utils/toast.js";
 import { isDiscordActivity } from "../utils/discordUrls.js";
 import { configureRoomResilience, startRoomKeepAlive, safeRoomSend, bindNetworkRecoveryHandlers } from "../utils/roomConnection.js";
-import { colyseusSDK } from "../utils/Colyseus.js";
 import { discordSDK } from "../utils/DiscordSDK.js";
 import { waitForWatchState } from "../utils/roomState.js";
+import { joinWatchRoom, persistWatchRoomId } from "../utils/watchRoomJoin.js";
 import { detectWatchLayoutMode, type WatchLayoutMode } from "../utils/layoutMode.js";
 
 const DRIFT_CHECK_INTERVAL_MS = 800;
@@ -72,6 +72,10 @@ export class WatchApp {
   private applyingRemotePlayback = false;
   /** True while applying server playback (join, sync, video change) — block local echo to room. */
   private roomSyncInProgress = false;
+  /** Block host player echo briefly after programmatic sync (load/buffer fires pause late). */
+  private roomSyncGraceUntil = 0;
+  /** True for full bootstrapSession (join / reconnect). */
+  private sessionBootstrapInProgress = false;
   private playbackStateSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private lastVideoChangeAt = 0;
   private keepAliveStop: (() => void) | null = null;
@@ -789,23 +793,37 @@ export class WatchApp {
 
   /** Sync UI + playback from authoritative room state (join, reconnect, rejoin). */
   private async bootstrapSession() {
-    const isHost = this.room.state.hostSessionId === this.room.sessionId;
-    this.setHostUI(isHost);
-    this.lastSync = this.buildSyncFromRoom();
-    this.refreshUI();
+    this.sessionBootstrapInProgress = true;
+    try {
+      const isHost = this.room.state.hostSessionId === this.room.sessionId;
+      this.setHostUI(isHost);
+      this.lastSync = this.buildSyncFromRoom();
+      this.refreshUI();
 
-    if (!this.syncTimer) this.startSyncTimer();
-    if (!this.endCheckTimer) this.startEndDetection();
-    if (!this.controlsTimer) this.startControlsTimer();
+      if (!this.syncTimer) this.startSyncTimer();
+      if (!this.endCheckTimer) this.startEndDetection();
+      if (!this.controlsTimer) this.startControlsTimer();
 
-    await this.applySync(this.lastSync, true);
-    this.pendingForceSync = true;
-    safeRoomSend(this.room, "syncRequest");
+      await this.applySync(this.lastSync, true);
+      this.pendingForceSync = true;
+      safeRoomSend(this.room, "syncRequest");
+    } finally {
+      this.sessionBootstrapInProgress = false;
+      this.roomSyncGraceUntil = Date.now() + 3000;
+    }
   }
 
   private shouldBroadcastPlayerState(): boolean {
-    if (!this.canControlPlayback()) return false;
-    if (this.playerLoading || this.roomSyncInProgress) return false;
+    // Only the host may push automatic player events (load/buffer/pause) to the room.
+    if (!this.isHost) return false;
+    if (
+      this.sessionBootstrapInProgress ||
+      this.playerLoading ||
+      this.roomSyncInProgress ||
+      Date.now() < this.roomSyncGraceUntil
+    ) {
+      return false;
+    }
     if (this.suppressStateBroadcast > 0 || this.applyingRemotePlayback) return false;
     if (document.hidden) return false;
     return true;
@@ -874,24 +892,28 @@ export class WatchApp {
     this.reconnectInFlight = true;
     this.setConnectionStatus("connecting");
 
-    const roomNames = ["my_room", "watch_room"];
+    const channelId = discordSDK.channelId;
+    if (!channelId) {
+      this.reconnectInFlight = false;
+      this.setConnectionStatus("disconnected");
+      this.showStatus("Re-open the Activity from a voice channel to reconnect.", true);
+      return;
+    }
+
     for (let attempt = 0; attempt < 6; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
 
-      for (const roomName of roomNames) {
-        try {
-          const newRoom = await colyseusSDK.joinOrCreate<WatchRoomState>(roomName, {
-            channelId: discordSDK.channelId,
-          });
-          configureRoomResilience(newRoom);
-          await waitForWatchState(newRoom);
-          await new Promise((r) => requestAnimationFrame(() => r(undefined)));
-          this.destroy();
-          new WatchApp(newRoom, this.root);
-          return;
-        } catch (err) {
-          console.warn(`Rejoin ${roomName} attempt ${attempt + 1} failed:`, err);
-        }
+      try {
+        const newRoom = await joinWatchRoom(channelId);
+        configureRoomResilience(newRoom);
+        await waitForWatchState(newRoom);
+        await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+        persistWatchRoomId(channelId, newRoom.roomId);
+        this.destroy();
+        new WatchApp(newRoom, this.root);
+        return;
+      } catch (err) {
+        console.warn(`Rejoin attempt ${attempt + 1} failed:`, err);
       }
     }
 
@@ -1145,7 +1167,7 @@ export class WatchApp {
   }
 
   private handlePlayerError(errorCode: number) {
-    if (!this.canControlPlayback()) return;
+    if (!this.isHost) return;
     if (errorCode === 100 || errorCode === 101) {
       this.signalVideoUnavailable(errorCode);
       return;
@@ -1205,7 +1227,8 @@ export class WatchApp {
   private scheduleUnavailableCheck(deferred = false, errorCode?: number) {
     this.clearUnavailableCheck();
     const videoId = this.room.state.videoId;
-    if (!videoId || !this.canControlPlayback()) return;
+    // One reporter avoids duplicate skip races; host is authoritative for playback.
+    if (!videoId || !this.isHost) return;
 
     const delay = deferred ? 12_000 : UNAVAILABLE_CHECK_MS;
 
@@ -1225,7 +1248,7 @@ export class WatchApp {
 
   /** Host / controller reports unplayable videos so the room skips ahead. */
   private signalVideoUnavailable(errorCode?: number) {
-    if (!this.canControlPlayback()) return;
+    if (!this.isHost) return;
     const videoId = this.room.state.videoId;
     if (!videoId || this.unavailableSentForVideoId === videoId) return;
 
@@ -1266,7 +1289,7 @@ export class WatchApp {
   }
 
   private signalVideoEnded() {
-    if (this.videoEndedSent || !this.canControlPlayback()) return;
+    if (this.videoEndedSent || !this.isHost) return;
     this.videoEndedSent = true;
     this.room.send("videoEnded", {});
   }
@@ -1854,10 +1877,14 @@ export class WatchApp {
 
       await this.ensurePlayer(sync.videoId, {
         startTime: sync.currentTime,
-        autoplay: sync.isPlaying,
+        autoplay: false,
       });
 
       if (!this.player || !sync.videoId) return;
+
+      if (this.player.waitForReady) {
+        await this.player.waitForReady();
+      }
 
       this.prefetchVideoDuration(sync.videoId);
       this.lastSync = sync;
@@ -1865,7 +1892,7 @@ export class WatchApp {
       if (sync.isPlaying) {
         this.applyPlay(sync.currentTime);
         if (this.canControlPlayback()) this.markLocalPlaybackAction();
-        this.scheduleUnavailableCheck();
+        if (this.isHost) this.scheduleUnavailableCheck();
       } else {
         this.applyPause(sync.currentTime);
       }
@@ -1874,6 +1901,7 @@ export class WatchApp {
       this.renderQueue();
     } finally {
       this.roomSyncInProgress = false;
+      this.roomSyncGraceUntil = Date.now() + 2000;
     }
   }
 
@@ -1949,9 +1977,13 @@ export class WatchApp {
       const videoChanged = sync.videoId !== this.loadedVideoId;
       await this.ensurePlayer(sync.videoId, {
         startTime: sync.currentTime,
-        autoplay: sync.isPlaying,
+        autoplay: false,
       });
       if (!this.player || !sync.videoId) return;
+
+      if (this.player.waitForReady) {
+        await this.player.waitForReady();
+      }
 
       this.prefetchVideoDuration(sync.videoId);
 
@@ -1970,7 +2002,7 @@ export class WatchApp {
           this.applyPlay(sync.currentTime);
           if (videoChanged && this.canControlPlayback()) this.markLocalPlaybackAction();
         }
-        if (videoChanged) {
+        if (videoChanged && this.isHost) {
           this.scheduleUnavailableCheck();
         }
       } else if (needsUpdate || playingMismatch || videoChanged) {
@@ -1981,6 +2013,7 @@ export class WatchApp {
       this.renderQueue();
     } finally {
       this.roomSyncInProgress = false;
+      this.roomSyncGraceUntil = Date.now() + 2000;
     }
   }
 
@@ -2063,7 +2096,7 @@ export class WatchApp {
     if (this.endCheckTimer) clearInterval(this.endCheckTimer);
     this.endCheckTimer = setInterval(() => {
       if (!this.player || this.videoEndedSent || this.playerLoading) return;
-      if (!this.canControlPlayback()) return;
+      if (!this.isHost) return;
 
       if (this.player.getLastState() === "ended") {
         this.signalVideoEnded();

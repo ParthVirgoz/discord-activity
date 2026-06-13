@@ -4,32 +4,23 @@ import { discordSDK } from "./utils/DiscordSDK.js";
 
 setupDiscordNetworking();
 import { colyseusSDK } from "./utils/Colyseus.js";
-import type { WatchRoomState } from "./schema.js";
 import { authenticate } from "./utils/Auth.js";
 import { WatchApp } from "./ui/WatchApp.js";
 import { waitForWatchState, getWatchRoomErrorMessage } from "./utils/roomState.js";
 import { configureRoomResilience } from "./utils/roomConnection.js";
-
+import { joinWatchRoom } from "./utils/watchRoomJoin.js";
 const appRoot = document.getElementById("app")!;
 
 function showError(message: string) {
   appRoot.innerHTML = `<div class="error-screen"><p>${message}</p></div>`;
 }
 
-async function joinWatchRoom() {
-  const roomNames = ["my_room", "watch_room"];
-  let lastError: unknown;
-  for (const roomName of roomNames) {
-    try {
-      return await colyseusSDK.joinOrCreate<WatchRoomState>(roomName, {
-        channelId: discordSDK.channelId,
-      });
-    } catch (e) {
-      lastError = e;
-      console.warn(`joinOrCreate(${roomName}) failed:`, e);
-    }
+async function connectWatchRoom() {
+  const channelId = discordSDK.channelId;
+  if (!channelId) {
+    throw new Error("Discord channelId unavailable — join a voice channel first");
   }
-  throw lastError;
+  return joinWatchRoom(channelId);
 }
 
 function showLoading(message: string) {
@@ -56,7 +47,7 @@ function showLoading(message: string) {
   try {
     showLoading("Joining your voice channel room…");
 
-    const room = await joinWatchRoom();
+    const room = await connectWatchRoom();
     configureRoomResilience(room);
     await waitForWatchState(room);
 

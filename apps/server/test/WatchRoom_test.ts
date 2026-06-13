@@ -79,6 +79,32 @@ describe("WatchRoom", () => {
     assert.strictEqual(room.state.hostSessionId, viewer.sessionId);
   });
 
+  it("replaces stale session when same discord user rejoins", async () => {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
+      channelId: TEST_CHANNEL,
+    });
+    const host = await connectAs(colyseus, room, "host");
+    host.send("addBatchToQueue", {
+      items: [{ videoId: "dQw4w9WgXcQ", title: "One", durationSec: 212 }],
+    });
+    await room.waitForNextPatch();
+
+    const viewer = await connectAs(colyseus, room, "viewer");
+    await room.waitForNextPatch();
+    const oldSession = viewer.sessionId;
+    await viewer.leave(4000);
+    await room.waitForNextPatch();
+
+    const viewerReturn = await connectAs(colyseus, room, "viewer");
+    await room.waitForNextPatch();
+
+    assert.strictEqual(room.state.queue.length, 1);
+    assert.strictEqual(room.state.videoId, "dQw4w9WgXcQ");
+    assert.ok(!room.state.members.has(oldSession));
+    assert.ok(room.state.members.has(viewerReturn.sessionId));
+    await viewerReturn.leave();
+  });
+
   it("preserves playlist when a viewer rejoins the same room", async () => {
     const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,

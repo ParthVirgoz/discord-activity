@@ -13,11 +13,8 @@ import { securityHeaders } from "./utils/securityHeaders";
 
 export default defineServer({
     rooms: {
-        // Production Railway already uses "my_room" — keep this name
+        // Production Railway uses "my_room" — single room name per voice channel (filterBy channelId)
         my_room: defineRoom(MyRoom, {
-            filterBy: ['channelId'],
-        } as { channelId?: string }),
-        watch_room: defineRoom(MyRoom, {
             filterBy: ['channelId'],
         } as { channelId?: string }),
     },

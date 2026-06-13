@@ -308,7 +308,7 @@ export class WatchRoom extends Room {
   }
 
   private promoteNextHost(): void {
-    const members = [...this.state.members.keys()];
+    const members = [...this.state.members.keys()].sort();
     const nextHost = members.find((sid) => sid !== this.state.hostSessionId);
     this.state.hostSessionId = nextHost ?? "";
   }
@@ -714,9 +714,18 @@ export class WatchRoom extends Room {
     member.avatarUrl = avatarHash
       ? `https://cdn.discordapp.com/avatars/${discordId}/${avatarHash}.png`
       : "";
+    const staleSessions: string[] = [];
+    for (const [sid, existing] of this.state.members.entries()) {
+      if (existing.discordId === discordId) {
+        staleSessions.push(sid);
+      }
+    }
+    for (const sid of staleSessions) {
+      this.state.members.delete(sid);
+    }
     this.state.members.set(client.sessionId, member);
 
-    if (!this.state.hostSessionId) {
+    if (!this.state.hostSessionId || !this.state.members.has(this.state.hostSessionId)) {
       this.state.hostSessionId = client.sessionId;
     }
 

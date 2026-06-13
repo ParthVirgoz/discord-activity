@@ -16,16 +16,17 @@ export function isWatchTogetherRoom(room: Room<WatchRoomState>): boolean {
   );
 }
 
-export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 5000): Promise<void> {
+/** Wait until Colyseus exposes the watch-room schema (members + queue). */
+export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 8000): Promise<void> {
   if (isWatchTogetherRoom(room)) {
-    return Promise.resolve();
+    return waitForStatePatch(room, timeoutMs);
   }
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
       if (isWatchTogetherRoom(room)) {
-        resolve();
+        resolve(waitForStatePatch(room, Math.max(2000, timeoutMs - 2000)));
       } else {
         reject(new Error("WATCH_ROOM_STATE_UNAVAILABLE"));
       }
@@ -34,7 +35,7 @@ export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 5000):
     const onChange = () => {
       if (isWatchTogetherRoom(room)) {
         cleanup();
-        resolve();
+        resolve(waitForStatePatch(room, Math.max(2000, timeoutMs - 2000)));
       }
     };
 
@@ -45,6 +46,40 @@ export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 5000):
 
     room.onStateChange(onChange);
     onChange();
+  });
+}
+
+/**
+ * After schema exists, wait for the first decoded state patch so queue/members
+ * are populated before client bootstrap (critical for reconnect).
+ */
+function waitForStatePatch(room: Room<WatchRoomState>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let patchSeen = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      room.onStateChange.remove(onChange);
+      clearTimeout(timer);
+      resolve();
+    };
+
+    const onChange = () => {
+      patchSeen = true;
+      requestAnimationFrame(finish);
+    };
+
+    const timer = setTimeout(finish, timeoutMs);
+    room.onStateChange(onChange);
+
+    // Colyseus may expose schema before the first patch is applied — wait one frame.
+    requestAnimationFrame(() => {
+      if (!patchSeen && room.state?.members != null) {
+        onChange();
+      }
+    });
   });
 }
 
