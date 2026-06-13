@@ -221,7 +221,7 @@ export async function searchVideos(
 }
 
 export async function importPlaylist(playlistId: string): Promise<PlaylistResponse> {
-  if (!PLAYLIST_ID_REGEX.test(playlistId) || playlistId.length > 64) {
+  if (!BARE_PLAYLIST_ID_REGEX.test(playlistId) || playlistId.length > 64) {
     return { playlistId, title: "", items: [], error: "Invalid playlist ID" };
   }
 
