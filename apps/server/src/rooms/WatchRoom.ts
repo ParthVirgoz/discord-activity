@@ -691,7 +691,6 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("syncRequest", (client) => {
-      if (!this.rateLimit(client)) return;
       client.send("sync", this.buildSyncPayload());
     });
   }
@@ -733,7 +732,7 @@ export class WatchRoom extends Room {
       if (code === CloseCode.CONSENTED) {
         throw new Error("consented leave");
       }
-      await this.allowReconnection(client, 120);
+      await this.allowReconnection(client, 180);
       return;
     } catch {
       /* consented leave or reconnection window expired */

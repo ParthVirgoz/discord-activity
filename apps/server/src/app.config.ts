@@ -24,8 +24,8 @@ export default defineServer({
 
     /** Discord Activities background tabs may miss WS pings — use a lenient heartbeat. */
     transport: new WebSocketTransport({
-        pingInterval: 20_000,
-        pingMaxRetries: 12,
+        pingInterval: 25_000,
+        pingMaxRetries: 24,
     }),
 
     express: (app) => {

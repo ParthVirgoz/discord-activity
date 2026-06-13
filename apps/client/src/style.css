@@ -22,27 +22,31 @@ html, body {
   margin: 0;
   padding: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--text);
   font-family: "gg sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: 14px;
+  overflow: hidden;
 }
 
 #app {
   min-height: 100vh;
+  min-height: 100dvh;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
 .watch-app {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 8px 12px 20px;
+  padding: 8px 12px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 100vh;
-  max-height: 100vh;
+  height: 100%;
+  max-height: 100%;
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -95,12 +99,141 @@ html, body {
 
 .watch-content {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(340px, 3fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   gap: 12px;
   align-items: stretch;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Tablet / narrow desktop / minimized window */
+@media (max-width: 1100px) {
+  .watch-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .watch-left {
+    flex: 0 0 auto;
+    height: auto;
+    overflow: visible;
+  }
+
+  .watch-right {
+    min-height: 260px;
+    max-height: none;
+    flex: 1 1 auto;
+  }
+
+  .playlist-section {
+    max-height: min(280px, 38vh);
+  }
+}
+
+/* Mobile */
+@media (max-width: 600px) {
+  .watch-app {
+    padding: 4px 6px 8px;
+    gap: 6px;
+  }
+
+  .watch-content {
+    gap: 8px;
+  }
+
+  .player-controls-title {
+    font-size: 12px;
+  }
+
+  .player-controls-row {
+    gap: 4px;
+  }
+
+  .player-ctrl-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .player-ctrl-btn--primary {
+    width: 36px;
+    height: 36px;
+  }
+
+  .player-time {
+    font-size: 11px;
+    min-width: 30px;
+  }
+
+  .player-seek {
+    margin: 0 2px;
+  }
+
+  .playlist-title {
+    font-size: 13px;
+  }
+
+  .playlist-section {
+    padding: 8px;
+    max-height: min(220px, 32vh);
+  }
+
+  .host-menu-btn {
+    padding: 4px 10px 4px 4px;
+    font-size: 11px;
+  }
+
+  .host-menu-avatar {
+    width: 22px;
+    height: 22px;
+  }
+
+  .watch-right {
+    padding: 8px;
+    min-height: 220px;
+  }
+
+  .yt-browse-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
+/* Short windows (Discord minimized / landscape phone) */
+@media (max-height: 720px) {
+  .watch-app {
+    padding: 4px 8px 8px;
+    gap: 6px;
+  }
+
+  .player-wrap {
+    max-height: min(38vh, 320px);
+  }
+
+  .playlist-section {
+    max-height: min(200px, 30vh);
+  }
+
+  .watch-right {
+    min-height: 180px;
+  }
+}
+
+@media (max-height: 520px) {
+  .player-wrap {
+    max-height: min(32vh, 240px);
+  }
+
+  .playlist-section {
+    max-height: min(140px, 26vh);
+  }
+
+  .watch-right {
+    min-height: 140px;
+  }
 }
 
 @media (max-width: 900px) {
@@ -490,8 +623,17 @@ html, body {
 }
 
 .player-wrap:hover .player-controls,
-.player-controls:focus-within {
+.player-controls:focus-within,
+.player-wrap.player-wrap--touch .player-controls {
   opacity: 1;
+}
+
+/* Touch devices: controls always visible (no hover) */
+@media (hover: none), (pointer: coarse) {
+  .player-wrap .player-controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .player-controls-gradient {
@@ -538,6 +680,8 @@ html, body {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   transition: background 0.15s ease, transform 0.1s ease;
 }
 
@@ -1353,9 +1497,10 @@ button:disabled {
   border: 1px solid #272727;
   border-radius: 10px;
   padding: 10px;
-  max-height: calc(100vh - 40px);
-  min-height: 420px;
+  max-height: 100%;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 
 .watch-right .yt-search-wrap {
@@ -1413,6 +1558,8 @@ button:disabled {
   border: none;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  touch-action: manipulation;
+  max-width: min(100%, 200px);
 }
 
 .host-menu-avatar {
@@ -1433,6 +1580,14 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+#host-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 120px;
 }
 
 .host-menu-btn:hover {
@@ -1590,9 +1745,10 @@ button:disabled {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 10px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .playlist-header-left {

@@ -13,9 +13,12 @@ import {
 import { iconHtml } from "../utils/icons.js";
 import { toast, type ToastType } from "../utils/toast.js";
 import { isDiscordActivity } from "../utils/discordUrls.js";
-import { configureRoomResilience, startRoomKeepAlive } from "../utils/roomConnection.js";
+import { configureRoomResilience, startRoomKeepAlive, safeRoomSend, bindNetworkRecoveryHandlers } from "../utils/roomConnection.js";
+import { colyseusSDK } from "../utils/Colyseus.js";
+import { discordSDK } from "../utils/DiscordSDK.js";
+import { waitForWatchState } from "../utils/roomState.js";
 
-const DRIFT_CHECK_INTERVAL_MS = 1500;
+const DRIFT_CHECK_INTERVAL_MS = 800;
 const END_CHECK_INTERVAL_MS = 2000;
 const SYNC_APPLY_THRESHOLD = 0.35;
 /** Ignore echoed play/pause/seek from the room after local controller actions. */
@@ -68,6 +71,8 @@ export class WatchApp {
   private playbackStateSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private lastVideoChangeAt = 0;
   private keepAliveStop: (() => void) | null = null;
+  private networkRecoveryStop: (() => void) | null = null;
+  private reconnectInFlight = false;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
@@ -239,12 +244,12 @@ export class WatchApp {
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") return;
-      this.pendingForceSync = true;
-      this.room.send("syncRequest", {});
+      this.recoverFromDisconnect();
     });
 
     this.bindKeyboardControls();
     this.bindPlayerControls();
+    this.detectTouchLayout();
 
     if (isRawIpHost()) {
       toast.show(
@@ -368,6 +373,13 @@ export class WatchApp {
     this.seekTo(t);
     this.room.send("seek", { currentTime: t });
     this.updatePlayerControls();
+  }
+
+  private detectTouchLayout() {
+    const isTouch =
+      window.matchMedia("(hover: none), (pointer: coarse)").matches ||
+      window.matchMedia("(max-width: 768px)").matches;
+    this.root.querySelector(".player-wrap")?.classList.toggle("player-wrap--touch", isTouch);
   }
 
   private bindPlayerControls() {
@@ -675,39 +687,76 @@ export class WatchApp {
 
   private bindConnectionHandlers() {
     configureRoomResilience(this.room);
-    this.keepAliveStop = startRoomKeepAlive(this.room, () => {
-      if (this.room.connection?.isOpen) {
-        this.room.send("syncRequest", {});
-      }
-    });
+    this.keepAliveStop = startRoomKeepAlive(this.room, () => this.requestRoomSync());
+    this.networkRecoveryStop = bindNetworkRecoveryHandlers(this.room, () => this.recoverFromDisconnect());
 
     this.room.onDrop(() => {
       this.setConnectionStatus("connecting");
     });
 
     this.room.onReconnect(() => {
+      this.reconnectInFlight = false;
       this.setConnectionStatus("connected");
-      this.pendingForceSync = true;
-      this.room.send("syncRequest", {});
+      this.recoverFromDisconnect();
     });
 
     this.room.onLeave((code) => {
+      if (this.reconnectInFlight) return;
       if (this.room.reconnection.isReconnecting) return;
       setTimeout(() => {
         if (this.room.reconnection.isReconnecting) return;
-        this.setConnectionStatus("disconnected");
-        this.showStatus(`Disconnected (code ${code}). Re-open the Activity to reconnect.`, true);
-      }, 750);
+        void this.attemptRoomRejoin(code);
+      }, 1200);
     });
 
     this.room.onError((_code, message) => {
-      if (this.room.reconnection.isReconnecting) {
-        this.setConnectionStatus("connecting");
-        return;
-      }
       this.setConnectionStatus("connecting");
       console.warn("Room connection error:", message);
     });
+  }
+
+  private requestRoomSync() {
+    this.pendingForceSync = true;
+    safeRoomSend(this.room, "syncRequest");
+  }
+
+  private recoverFromDisconnect() {
+    this.ignoreRemotePlaybackUntil = 0;
+    this.pendingForceSync = true;
+    if (safeRoomSend(this.room, "syncRequest")) return;
+    if (this.player && this.room.state.videoId) {
+      void this.applySync(this.buildSyncFromRoom(), true);
+    }
+  }
+
+  private async attemptRoomRejoin(code: number) {
+    if (this.reconnectInFlight) return;
+    this.reconnectInFlight = true;
+    this.setConnectionStatus("connecting");
+
+    const roomNames = ["my_room", "watch_room"];
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+
+      for (const roomName of roomNames) {
+        try {
+          const newRoom = await colyseusSDK.joinOrCreate<WatchRoomState>(roomName, {
+            channelId: discordSDK.channelId,
+          });
+          configureRoomResilience(newRoom);
+          await waitForWatchState(newRoom);
+          this.destroy();
+          new WatchApp(newRoom, this.root);
+          return;
+        } catch (err) {
+          console.warn(`Rejoin ${roomName} attempt ${attempt + 1} failed:`, err);
+        }
+      }
+    }
+
+    this.reconnectInFlight = false;
+    this.setConnectionStatus("disconnected");
+    this.showStatus(`Connection lost (code ${code}). Re-open the Activity to reconnect.`, true);
   }
 
   private externalImg(src: string, className = "", lazy = false): string {
@@ -1165,7 +1214,7 @@ export class WatchApp {
       this.renderMembers();
       this.updateHostMenuAvatar();
       this.pendingForceSync = true;
-      this.room.send("syncRequest", {});
+      safeRoomSend(this.room, "syncRequest");
     });
 
     this.room.onMessage("permissionsChanged", (_perms: PermissionsPayload) => {
@@ -1766,8 +1815,7 @@ export class WatchApp {
   private startSyncTimer() {
     if (this.syncTimer) clearInterval(this.syncTimer);
     this.syncTimer = setInterval(() => {
-      if (!this.player || !this.lastSync) return;
-      if (this.shouldIgnoreRemotePlaybackApply()) return;
+      if (!this.player || !this.lastSync || !this.room.state.videoId) return;
 
       const roomTime = this.getRoomEffectiveTime();
       const localTime = this.player.getCurrentTime();
@@ -1782,7 +1830,7 @@ export class WatchApp {
             currentTime: roomTime,
             isPlaying: roomPlaying,
           },
-          drift > 2
+          drift > 1.5 || playingMismatch
         );
       }
     }, DRIFT_CHECK_INTERVAL_MS);
@@ -1827,6 +1875,8 @@ export class WatchApp {
     }
     this.keepAliveStop?.();
     this.keepAliveStop = null;
+    this.networkRecoveryStop?.();
+    this.networkRecoveryStop = null;
     if (this.controlsTimer) clearInterval(this.controlsTimer);
     this.clearUnavailableCheck();
     if (this.syncTimer) clearInterval(this.syncTimer);

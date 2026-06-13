@@ -26,8 +26,8 @@ exports.default = (0, colyseus_1.defineServer)({
     },
     /** Discord Activities background tabs may miss WS pings — use a lenient heartbeat. */
     transport: new colyseus_1.WebSocketTransport({
-        pingInterval: 20_000,
-        pingMaxRetries: 12,
+        pingInterval: 25_000,
+        pingMaxRetries: 24,
     }),
     express: (app) => {
         app.use(securityHeaders_1.securityHeaders);
