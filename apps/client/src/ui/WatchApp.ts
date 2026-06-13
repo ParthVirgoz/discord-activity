@@ -17,6 +17,7 @@ import { configureRoomResilience, startRoomKeepAlive, safeRoomSend, bindNetworkR
 import { colyseusSDK } from "../utils/Colyseus.js";
 import { discordSDK } from "../utils/DiscordSDK.js";
 import { waitForWatchState } from "../utils/roomState.js";
+import { detectWatchLayoutMode, type WatchLayoutMode } from "../utils/layoutMode.js";
 
 const DRIFT_CHECK_INTERVAL_MS = 800;
 const END_CHECK_INTERVAL_MS = 2000;
@@ -25,8 +26,9 @@ const SYNC_APPLY_THRESHOLD = 0.35;
 const LOCAL_SYNC_GRACE_MS = 1500;
 /** Suppress player state echo after programmatic play/pause/seek. */
 const STATE_BROADCAST_SUPPRESS_MS = 600;
-/** Piped stream lookup + proxy can take 15s+ in Discord — don't mark unavailable too early. */
-const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 35_000 : 8_000;
+/** Piped stream lookup + proxy can take a long time in Discord — wait before skipping. */
+const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 60_000 : 12_000;
+const MAX_VIDEO_LOAD_RETRIES = 2;
 
 export interface SyncPayload {
   videoId: string;
@@ -74,6 +76,10 @@ export class WatchApp {
   private networkRecoveryStop: (() => void) | null = null;
   private reconnectInFlight = false;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
+  private layoutMode: WatchLayoutMode = "desktop";
+  private activeSheet: "playlist" | "search" | "viewers" | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private videoLoadRetries = new Map<string, number>();
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
     this.room = room;
@@ -109,7 +115,7 @@ export class WatchApp {
               <div id="yt-player"></div>
               <div id="player-placeholder" class="player-placeholder">
                 <p class="player-placeholder-text">
-                  <span>Add videos from the search panel</span>
+                  <span>Add videos from Search</span>
                   ${iconHtml("arrow-right", 16, "ui-icon ui-icon--inline")}
                 </p>
               </div>
@@ -200,6 +206,23 @@ export class WatchApp {
             <p id="search-empty" class="search-empty">Search YouTube or paste a video link</p>
           </aside>
         </div>
+
+        <nav class="mobile-toolbar" aria-label="Open panels" hidden>
+          <button type="button" id="open-playlist-sheet" class="mobile-toolbar-btn">
+            ${iconHtml("list", 18, "ui-icon")}
+            <span>Playlist</span>
+          </button>
+          <button type="button" id="open-search-sheet" class="mobile-toolbar-btn">
+            ${iconHtml("search", 18, "ui-icon")}
+            <span>Search</span>
+          </button>
+          <button type="button" id="open-viewers-sheet" class="mobile-toolbar-btn">
+            ${iconHtml("users", 18, "ui-icon")}
+            <span>Viewers</span>
+          </button>
+        </nav>
+
+        <div id="sheet-backdrop" class="sheet-backdrop hidden" aria-hidden="true"></div>
       </div>
     `;
 
@@ -249,7 +272,8 @@ export class WatchApp {
 
     this.bindKeyboardControls();
     this.bindPlayerControls();
-    this.detectTouchLayout();
+    this.bindLayoutObserver();
+    this.bindSheetControls();
 
     if (isRawIpHost()) {
       toast.show(
@@ -375,11 +399,99 @@ export class WatchApp {
     this.updatePlayerControls();
   }
 
-  private detectTouchLayout() {
-    const isTouch =
-      window.matchMedia("(hover: none), (pointer: coarse)").matches ||
-      window.matchMedia("(max-width: 768px)").matches;
-    this.root.querySelector(".player-wrap")?.classList.toggle("player-wrap--touch", isTouch);
+  private bindLayoutObserver() {
+    const app = this.root.querySelector(".watch-app") as HTMLElement | null;
+    if (!app) return;
+
+    const apply = () => {
+      const mode = detectWatchLayoutMode(app.clientWidth, app.clientHeight);
+      if (mode !== this.layoutMode) {
+        this.layoutMode = mode;
+        if (mode === "desktop" || mode === "mini") this.closeSheets();
+      }
+      app.classList.remove("layout-desktop", "layout-compact", "layout-mini");
+      app.classList.add(`layout-${mode}`);
+
+      const toolbar = this.root.querySelector(".mobile-toolbar") as HTMLElement | null;
+      if (toolbar) toolbar.hidden = mode !== "compact";
+
+      const isTouch =
+        mode !== "desktop" ||
+        window.matchMedia("(hover: none), (pointer: coarse)").matches;
+      this.root.querySelector(".player-wrap")?.classList.toggle("player-wrap--touch", isTouch);
+    };
+
+    apply();
+    this.resizeObserver = new ResizeObserver(apply);
+    this.resizeObserver.observe(app);
+  }
+
+  private bindSheetControls() {
+    this.root.querySelector("#open-playlist-sheet")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleSheet("playlist");
+    });
+    this.root.querySelector("#open-search-sheet")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleSheet("search");
+    });
+    this.root.querySelector("#open-viewers-sheet")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleSheet("viewers");
+    });
+    this.root.querySelector("#sheet-backdrop")?.addEventListener("click", () => {
+      this.closeSheets();
+    });
+  }
+
+  private toggleSheet(sheet: "playlist" | "search" | "viewers") {
+    if (this.activeSheet === sheet) {
+      this.closeSheets();
+      return;
+    }
+    this.openSheet(sheet);
+  }
+
+  private openSheet(sheet: "playlist" | "search" | "viewers") {
+    const app = this.root.querySelector(".watch-app");
+    if (!app || this.layoutMode !== "compact") return;
+
+    this.activeSheet = sheet;
+    app.classList.remove("sheet-open--playlist", "sheet-open--search", "sheet-open--viewers");
+    app.classList.add(`sheet-open--${sheet}`);
+
+    const backdrop = this.root.querySelector("#sheet-backdrop");
+    backdrop?.classList.remove("hidden");
+    backdrop?.setAttribute("aria-hidden", "false");
+
+    if (sheet === "viewers") {
+      this.dropdownOpen = true;
+      this.root.querySelector("#host-dropdown")?.classList.remove("hidden");
+    } else {
+      this.closeDropdown();
+    }
+
+    this.root.querySelectorAll(".mobile-toolbar-btn").forEach((btn) => {
+      btn.classList.toggle(
+        "mobile-toolbar-btn--active",
+        btn.id === `open-${sheet}-sheet`
+      );
+    });
+  }
+
+  private closeSheets() {
+    this.activeSheet = null;
+    const app = this.root.querySelector(".watch-app");
+    app?.classList.remove("sheet-open--playlist", "sheet-open--search", "sheet-open--viewers");
+
+    const backdrop = this.root.querySelector("#sheet-backdrop");
+    backdrop?.classList.add("hidden");
+    backdrop?.setAttribute("aria-hidden", "true");
+
+    this.closeDropdown();
+    this.root.querySelectorAll(".mobile-toolbar-btn--active").forEach((btn) => {
+      btn.classList.remove("mobile-toolbar-btn--active");
+    });
   }
 
   private bindPlayerControls() {
@@ -586,6 +698,7 @@ export class WatchApp {
     this.dropdownOpen = false;
     this.resetHostDropdownPosition();
     this.root.querySelector("#host-dropdown")?.classList.add("hidden");
+    if (this.activeSheet === "viewers") this.closeSheets();
   }
 
   private closeQueueMenu() {
@@ -1004,7 +1117,42 @@ export class WatchApp {
   }
 
   private handlePlayerError(errorCode: number) {
-    this.signalVideoUnavailable(errorCode);
+    if (!this.canControlPlayback()) return;
+    if (errorCode === 100 || errorCode === 101) {
+      this.signalVideoUnavailable(errorCode);
+      return;
+    }
+    void this.retryPlaybackOrDeferUnavailable(errorCode);
+  }
+
+  private async retryPlaybackOrDeferUnavailable(errorCode?: number) {
+    const videoId = this.room.state.videoId;
+    if (!videoId) return;
+
+    const attempts = this.videoLoadRetries.get(videoId) ?? 0;
+    if (attempts < MAX_VIDEO_LOAD_RETRIES) {
+      this.videoLoadRetries.set(videoId, attempts + 1);
+      this.unavailableSentForVideoId = "";
+      toast.show("Video is loading slowly — retrying…", "warning");
+
+      await new Promise((r) => setTimeout(r, 2000));
+      if (this.room.state.videoId !== videoId) return;
+
+      this.loadedVideoId = "";
+      const sync = this.lastSync ?? this.buildSyncFromRoom();
+      try {
+        await this.ensurePlayer(videoId, {
+          startTime: sync.currentTime,
+          autoplay: sync.isPlaying,
+        });
+        if (sync.isPlaying) this.scheduleUnavailableCheck();
+        return;
+      } catch {
+        /* fall through to deferred check */
+      }
+    }
+
+    this.scheduleUnavailableCheck(true, errorCode);
   }
 
   private clearUnavailableCheck() {
@@ -1014,24 +1162,35 @@ export class WatchApp {
     }
   }
 
-  private scheduleUnavailableCheck() {
+  private isVideoActuallyPlaying(): boolean {
+    if (!this.player) return false;
+    const state = this.player.getLastState();
+    if (state === "playing" || state === "paused" || state === "buffering") return true;
+    if (this.player.getDuration() > 0) return true;
+    if (this.player.getCurrentTime() > 0.5) return true;
+    if (this.room.state.videoDurationSec > 0) return true;
+    return false;
+  }
+
+  private scheduleUnavailableCheck(deferred = false, errorCode?: number) {
     this.clearUnavailableCheck();
     const videoId = this.room.state.videoId;
-    if (!videoId) return;
+    if (!videoId || !this.canControlPlayback()) return;
+
+    const delay = deferred ? 12_000 : UNAVAILABLE_CHECK_MS;
 
     this.unavailableCheckTimer = setTimeout(() => {
       this.unavailableCheckTimer = null;
       if (!this.player || this.room.state.videoId !== videoId) return;
       if (this.unavailableSentForVideoId === videoId || this.videoEndedSent) return;
-
-      const duration = this.player.getDuration();
-      const state = this.player.getLastState();
-      if (duration > 0 || state === "playing" || state === "paused" || state === "buffering") {
+      if (this.playerLoading) {
+        this.scheduleUnavailableCheck(deferred, errorCode);
         return;
       }
+      if (this.isVideoActuallyPlaying()) return;
 
-      this.signalVideoUnavailable();
-    }, UNAVAILABLE_CHECK_MS);
+      this.signalVideoUnavailable(errorCode);
+    }, delay);
   }
 
   /** Host / controller reports unplayable videos so the room skips ahead. */
@@ -1052,6 +1211,9 @@ export class WatchApp {
 
     if (state === "playing" || state === "paused" || state === "buffering") {
       this.clearUnavailableCheck();
+      if (state === "playing") {
+        this.videoLoadRetries.delete(this.room.state.videoId);
+      }
     }
 
     this.reportDurationToServer();
@@ -1182,6 +1344,7 @@ export class WatchApp {
     this.room.onMessage("videoChanged", (sync: SyncPayload) => {
       this.videoEndedSent = false;
       this.unavailableSentForVideoId = "";
+      this.videoLoadRetries.delete(sync.videoId);
       this.ignoreRemotePlaybackUntil = 0;
       this.lastVideoChangeAt = Date.now();
       this.clearUnavailableCheck();
@@ -1705,7 +1868,7 @@ export class WatchApp {
         if (autoplay) this.scheduleUnavailableCheck();
       } catch {
         this.showStatus("Failed to load YouTube player. Try another video.", true);
-        this.signalVideoUnavailable();
+        void this.retryPlaybackOrDeferUnavailable();
       } finally {
         this.setPlayerLoading(false);
       }
@@ -1722,7 +1885,7 @@ export class WatchApp {
       if (autoplay) this.scheduleUnavailableCheck();
     } catch {
       this.showStatus("Failed to load YouTube player. Try another video.", true);
-      this.signalVideoUnavailable();
+      void this.retryPlaybackOrDeferUnavailable();
     } finally {
       this.setPlayerLoading(false);
     }
@@ -1850,7 +2013,7 @@ export class WatchApp {
       this.reportDurationToServer();
 
       const duration = this.getEffectiveVideoDuration();
-      if (duration <= 0) return;
+      if (duration <= 10 || !this.player.isPlaying()) return;
 
       const current = this.getDisplayCurrentTime();
       if (current >= duration - 1.5) {
@@ -1873,6 +2036,8 @@ export class WatchApp {
     if (this.keyboardHandler) {
       document.removeEventListener("keydown", this.keyboardHandler, true);
     }
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     this.keepAliveStop?.();
     this.keepAliveStop = null;
     this.networkRecoveryStop?.();

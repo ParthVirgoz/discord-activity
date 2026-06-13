@@ -2,7 +2,8 @@ import type { VideoPlayer, PlayerEventHandler, YtPlayerState } from "./YouTubePl
 import { getYouTubeMediaUrl, isDiscordActivity } from "../utils/discordUrls.js";
 
 const DISCORD_AUTOPLAY_RETRIES = 8;
-const LOAD_TIMEOUT_MS = 30_000;
+const LOAD_TIMEOUT_MS = 45_000;
+const MAX_SRC_RETRIES = 2;
 
 export class HtmlVideoPlayer implements VideoPlayer {
   private video: HTMLVideoElement;
@@ -20,6 +21,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private onDurationChange?: (durationSec: number) => void;
   private onReady?: () => void;
   private onError?: (errorCode: number) => void;
+  private srcRetryCount = 0;
 
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
@@ -76,6 +78,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
     });
 
     this.video.addEventListener("error", () => {
+      if (this.retrySourceLoad()) return;
       this.failReady(new Error("Video failed to load"));
       this.onError?.(150);
     });
@@ -95,6 +98,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
   private markReady(): void {
     this.clearLoadTimeout();
+    this.srcRetryCount = 0;
     if (!this.ready) {
       this.ready = true;
       this.onReady?.();
@@ -122,11 +126,27 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.clearLoadTimeout();
     this.loadTimeout = setTimeout(() => {
       this.loadTimeout = null;
-      if (!this.ready) {
-        this.failReady(new Error("Video load timed out"));
-        this.onError?.(150);
-      }
+      if (this.ready) return;
+      if (this.retrySourceLoad()) return;
+      this.failReady(new Error("Video load timed out"));
+      this.onError?.(150);
     }, LOAD_TIMEOUT_MS);
+  }
+
+  /** Retry stream fetch before reporting failure (Piped can be slow in Discord). */
+  private retrySourceLoad(): boolean {
+    if (!this.videoId || this.srcRetryCount >= MAX_SRC_RETRIES) return false;
+    this.srcRetryCount += 1;
+    this.ready = false;
+    this.resetReadyPromise();
+    const delay = 1500 * this.srcRetryCount;
+    setTimeout(() => {
+      if (!this.videoId) return;
+      this.video.src = getYouTubeMediaUrl(this.videoId);
+      this.video.load();
+      this.scheduleLoadTimeout();
+    }, delay);
+    return true;
   }
 
   private clearAutoplayRetry(): void {

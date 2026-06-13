@@ -107,149 +107,290 @@ html, body {
   overflow: hidden;
 }
 
-/* Tablet / narrow desktop / minimized window */
+/* ── Layout modes (set by JS ResizeObserver) ── */
+
+.watch-app.layout-desktop .mobile-toolbar,
+.watch-app.layout-desktop .sheet-backdrop {
+  display: none !important;
+}
+
+/* Compact: player + toolbar; playlist/search in bottom sheets */
+.watch-app.layout-compact {
+  padding: 4px 6px 0;
+}
+
+.watch-app.layout-compact .watch-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  gap: 0;
+}
+
+.watch-app.layout-compact .watch-left {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.watch-app.layout-compact .player-wrap {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: unset;
+  max-height: none;
+  border-radius: 10px 10px 0 0;
+}
+
+.watch-app.layout-compact .playlist-section,
+.watch-app.layout-compact .watch-right {
+  display: none;
+}
+
+.watch-app.layout-compact .mobile-toolbar {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.watch-app.layout-compact.sheet-open--playlist .playlist-section,
+.watch-app.layout-compact.sheet-open--search .watch-right {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 300;
+  max-height: min(72dvh, 560px);
+  height: min(72dvh, 560px);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.55);
+  animation: sheet-slide-up 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.watch-app.layout-compact.sheet-open--search .watch-right {
+  background: #0f0f0f;
+  border: 1px solid #272727;
+  border-bottom: none;
+  padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+  min-height: 0;
+}
+
+.watch-app.layout-compact.sheet-open--playlist .playlist-section {
+  padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+  max-height: none;
+}
+
+.watch-app.layout-compact.sheet-open--viewers #host-dropdown {
+  display: flex !important;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  width: 100%;
+  max-width: none;
+  max-height: min(72dvh, 520px);
+  z-index: 300;
+  border-radius: 16px 16px 0 0;
+  padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.55);
+  animation: sheet-slide-up 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.watch-app.layout-compact .playlist-header-right .host-menu-btn {
+  display: none;
+}
+
+.watch-app.layout-compact .queue-row {
+  grid-template-columns: 36px 96px minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.watch-app.layout-compact .queue-row-thumb-wrap {
+  width: 96px;
+}
+
+.watch-app.layout-compact.sheet-open--playlist .playlist-section::before,
+.watch-app.layout-compact.sheet-open--search .watch-right::before,
+.watch-app.layout-compact.sheet-open--viewers #host-dropdown::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  margin: 0 auto 10px;
+  flex-shrink: 0;
+}
+
+@keyframes sheet-slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Mini / Discord pop-out: video only */
+.watch-app.layout-mini {
+  padding: 0;
+  gap: 0;
+  max-width: none;
+}
+
+.watch-app.layout-mini .watch-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.watch-app.layout-mini .watch-left {
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
+.watch-app.layout-mini .player-wrap {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: unset;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.watch-app.layout-mini .playlist-section,
+.watch-app.layout-mini .watch-right,
+.watch-app.layout-mini .mobile-toolbar,
+.watch-app.layout-mini .sheet-backdrop {
+  display: none !important;
+}
+
+.watch-app.layout-mini .player-placeholder-text span:first-child {
+  font-size: 12px;
+}
+
+/* Mobile toolbar */
+.mobile-toolbar {
+  display: none;
+  align-items: stretch;
+  justify-content: space-around;
+  gap: 4px;
+  padding: 6px 8px max(6px, env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.mobile-toolbar-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mobile-toolbar-btn:hover,
+.mobile-toolbar-btn--active {
+  background: rgba(88, 101, 242, 0.15);
+  color: var(--text);
+}
+
+.mobile-toolbar-btn--active {
+  color: var(--accent);
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* Touch / compact / mini: always show player controls */
+.player-wrap--touch .player-controls,
+.watch-app.layout-compact .player-controls,
+.watch-app.layout-mini .player-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Tablet fallback when JS hasn't classified yet */
 @media (max-width: 1100px) {
-  .watch-content {
+  .watch-app:not(.layout-desktop):not(.layout-compact):not(.layout-mini) .watch-content {
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
   }
-
-  .watch-left {
-    flex: 0 0 auto;
-    height: auto;
-    overflow: visible;
-  }
-
-  .watch-right {
-    min-height: 260px;
-    max-height: none;
-    flex: 1 1 auto;
-  }
-
-  .playlist-section {
-    max-height: min(280px, 38vh);
-  }
 }
 
-/* Mobile */
 @media (max-width: 600px) {
-  .watch-app {
+  .watch-app:not(.layout-compact):not(.layout-mini) .watch-app {
     padding: 4px 6px 8px;
-    gap: 6px;
   }
 
-  .watch-content {
-    gap: 8px;
-  }
-
-  .player-controls-title {
-    font-size: 12px;
-  }
-
-  .player-controls-row {
-    gap: 4px;
-  }
-
-  .player-ctrl-btn {
-    width: 32px;
-    height: 32px;
-  }
-
-  .player-ctrl-btn--primary {
-    width: 36px;
-    height: 36px;
-  }
-
-  .player-time {
-    font-size: 11px;
-    min-width: 30px;
-  }
-
-  .player-seek {
-    margin: 0 2px;
-  }
-
-  .playlist-title {
-    font-size: 13px;
-  }
-
-  .playlist-section {
-    padding: 8px;
-    max-height: min(220px, 32vh);
-  }
-
-  .host-menu-btn {
-    padding: 4px 10px 4px 4px;
-    font-size: 11px;
-  }
-
-  .host-menu-avatar {
-    width: 22px;
-    height: 22px;
-  }
-
-  .watch-right {
-    padding: 8px;
-    min-height: 220px;
-  }
-
-  .yt-browse-grid {
+  .watch-app:not(.layout-compact):not(.layout-mini) .yt-browse-grid {
     grid-template-columns: 1fr;
-    gap: 8px;
+  }
+
+  .watch-app:not(.layout-compact):not(.layout-mini) .queue-row {
+    grid-template-columns: 36px 88px minmax(0, 1fr) auto;
+  }
+
+  .watch-app:not(.layout-compact):not(.layout-mini) .queue-row-thumb-wrap {
+    width: 88px;
   }
 }
 
-/* Short windows (Discord minimized / landscape phone) */
-@media (max-height: 720px) {
-  .watch-app {
-    padding: 4px 8px 8px;
-    gap: 6px;
-  }
-
-  .player-wrap {
-    max-height: min(38vh, 320px);
-  }
-
-  .playlist-section {
-    max-height: min(200px, 30vh);
-  }
-
-  .watch-right {
-    min-height: 180px;
-  }
+.watch-app.layout-compact .player-controls-title,
+.watch-app.layout-mini .player-controls-title {
+  font-size: 12px;
 }
 
-@media (max-height: 520px) {
-  .player-wrap {
-    max-height: min(32vh, 240px);
-  }
-
-  .playlist-section {
-    max-height: min(140px, 26vh);
-  }
-
-  .watch-right {
-    min-height: 140px;
-  }
+.watch-app.layout-compact .player-controls-row,
+.watch-app.layout-mini .player-controls-row {
+  gap: 4px;
 }
 
-@media (max-width: 900px) {
-  .watch-content {
-    grid-template-columns: 1fr;
-    overflow-y: auto;
-  }
+.watch-app.layout-compact .player-ctrl-btn,
+.watch-app.layout-mini .player-ctrl-btn {
+  width: 32px;
+  height: 32px;
+}
 
-  .watch-left {
-    max-height: none;
-    flex: 0 0 auto;
-  }
+.watch-app.layout-compact .player-ctrl-btn--primary,
+.watch-app.layout-mini .player-ctrl-btn--primary {
+  width: 36px;
+  height: 36px;
+}
 
-  .playlist-section {
-    max-height: min(320px, 40vh);
-  }
+.watch-app.layout-compact .player-time,
+.watch-app.layout-mini .player-time {
+  font-size: 11px;
+  min-width: 30px;
 }
 
 .watch-stage {

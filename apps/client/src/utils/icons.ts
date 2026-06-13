@@ -18,6 +18,8 @@ import {
   Pause,
   ArrowRight,
   TriangleAlert,
+  List,
+  Users,
   type IconNode,
 } from "lucide";
 
@@ -39,7 +41,9 @@ export type AppIcon =
   | "skip"
   | "skip-back"
   | "pause"
-  | "arrow-right";
+  | "arrow-right"
+  | "list"
+  | "users";
 
 const ICONS: Record<AppIcon, IconNode> = {
   search: Search,
@@ -60,6 +64,8 @@ const ICONS: Record<AppIcon, IconNode> = {
   "skip-back": SkipBack,
   pause: Pause,
   "arrow-right": ArrowRight,
+  list: List,
+  users: Users,
 };
 
 export function icon(name: AppIcon, size = 16, className = "ui-icon"): SVGElement {

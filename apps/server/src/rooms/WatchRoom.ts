@@ -608,7 +608,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("videoUnavailable", (client, msg: { errorCode?: number }) => {
-      if (!this.rateLimit(client)) return;
+      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
       if (typeof msg?.errorCode === "number" && msg.errorCode > 0) {
         console.warn(`Skipping unavailable video ${this.state.videoId} (YouTube error ${msg.errorCode})`);
       }
