@@ -4,6 +4,7 @@ const YOUTUBE_ERROR_MESSAGES: Record<number, string> = {
   100: "Video not found or is private.",
   101: "The video owner does not allow embedding on external sites.",
   150: "This video cannot be played here due to copyright or embedding restrictions.",
+  153: "Video player configuration error (missing or invalid referrer).",
 };
 
 export function getYouTubeErrorMessage(code: number): string {

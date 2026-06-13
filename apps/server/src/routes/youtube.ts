@@ -33,7 +33,7 @@ router.get("/search", requireAuth, async (req: AuthenticatedRequest, res) => {
 
   const result = await searchVideos(query, pageToken);
   if (result.error && result.items.length === 0) {
-    res.status(503).json({ error: result.error });
+    res.status(result.error.includes("not found") ? 404 : 503).json({ error: result.error });
     return;
   }
 

@@ -6,6 +6,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     server: {
+      host: true,
+      allowedHosts: true,
+      headers: {
+        'Referrer-Policy': 'strict-origin-when-cross-origin',
+      },
       proxy: {
         '/colyseus': {
           target: colyseusTarget,
@@ -19,11 +24,6 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
       },
-      allowedHosts: [
-        'localhost',
-        '.trycloudflare.com',
-        '.ngrok-free.app',
-      ],
     },
   };
 });

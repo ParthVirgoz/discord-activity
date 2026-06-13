@@ -9,7 +9,8 @@ const MAX_USERNAME_LENGTH = 32;
 const MIN_PLAYBACK_RATE = 0.25;
 const MAX_PLAYBACK_RATE = 2;
 const MAX_SEEK_TIME = 86400; // 24 hours
-const MAX_QUEUE_SIZE = 50;
+const MAX_QUEUE_SIZE = 100;
+const MAX_VIDEO_DURATION_SEC = 86400;
 
 export function isValidChannelId(channelId: unknown): channelId is string {
   return typeof channelId === "string" && CHANNEL_ID_REGEX.test(channelId);
@@ -45,6 +46,12 @@ export function clampQueueIndex(index: unknown, queueLength: number): number | n
   const n = typeof index === "number" ? index : Number(index);
   if (!Number.isInteger(n) || n < 0 || n >= queueLength) return null;
   return n;
+}
+
+export function clampDuration(seconds: unknown): number {
+  const n = typeof seconds === "number" ? seconds : Number(seconds);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, MAX_VIDEO_DURATION_SEC);
 }
 
 export { MAX_QUEUE_SIZE, MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE };

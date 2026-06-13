@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseYouTubeId, isValidVideoId, parsePlaylistId } from "./youtube.js";
+import { parseYouTubeId, isValidVideoId, parsePlaylistId, isYouTubeLinkInput } from "./youtube.js";
 
 describe("parseYouTubeId", () => {
   it("parses bare video IDs", () => {
@@ -33,5 +33,17 @@ describe("parseYouTubeId", () => {
     expect(parsePlaylistId("https://www.youtube.com/playlist?list=PLabc123XYZ")).toBe("PLabc123XYZ");
     expect(parsePlaylistId("PLabc123XYZ")).toBe("PLabc123XYZ");
     expect(parsePlaylistId("not valid!")).toBeNull();
+    expect(parsePlaylistId("hello")).toBeNull();
+    expect(parsePlaylistId("music")).toBeNull();
+    expect(parsePlaylistId("rock")).toBeNull();
+  });
+
+  it("distinguishes search terms from YouTube links", () => {
+    expect(isYouTubeLinkInput("hello")).toBe(false);
+    expect(isYouTubeLinkInput("drake")).toBe(false);
+    expect(isYouTubeLinkInput("dQw4w9WgXcQ")).toBe(true);
+    expect(isYouTubeLinkInput("https://youtu.be/dQw4w9WgXcQ")).toBe(true);
+    expect(isYouTubeLinkInput("PLabc123XYZ")).toBe(true);
+    expect(isYouTubeLinkInput("www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe(true);
   });
 });

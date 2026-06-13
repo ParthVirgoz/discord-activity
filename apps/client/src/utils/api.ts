@@ -37,12 +37,8 @@ async function apiGet<T>(path: string): Promise<T> {
   return data as T;
 }
 
-export async function searchYouTube(
-  query: string,
-  pageToken = ""
-): Promise<SearchResponse> {
+export async function searchYouTube(query: string): Promise<SearchResponse> {
   const params = new URLSearchParams({ q: query });
-  if (pageToken) params.set("pageToken", pageToken);
   return apiGet<SearchResponse>(`/api/youtube/search?${params}`);
 }
 

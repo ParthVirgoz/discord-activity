@@ -32,8 +32,9 @@
     "vitest": "^3.0.5"
   },
   "dependencies": {
-    "@discord/embedded-app-sdk": "^1.9.0",
     "@colyseus/schema": "^3.0.0",
-    "@colyseus/sdk": "^0.17.26"
+    "@colyseus/sdk": "^0.17.26",
+    "@discord/embedded-app-sdk": "^1.9.0",
+    "lucide": "^1.18.0"
   }
 }

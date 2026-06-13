@@ -1,4 +1,5 @@
 import { isValidVideoId, sanitizeTitle } from "../utils/validation";
+import { searchYouTubeBrowse, importYouTubeBrowsePlaylist } from "./browse";
 
 const BASE_URL = "https://www.googleapis.com/youtube/v3";
 const CACHE_TTL_MS = 30 * 60 * 1000;
@@ -6,7 +7,8 @@ const MAX_CACHE_SIZE = 256;
 const MAX_PLAYLIST_VIDEOS = 50;
 const SEARCH_PAGE_SIZE = 12;
 
-const PLAYLIST_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+const PLAYLIST_LIST_PARAM_REGEX = /^[a-zA-Z0-9_-]+$/;
+const BARE_PLAYLIST_ID_REGEX = /^(PL|RD|UU|OLAK5uy_|FL|LL|VL)[a-zA-Z0-9_-]{8,}$/;
 
 interface CacheEntry<T> {
   value: T;
@@ -66,16 +68,21 @@ export function sanitizeSearchQuery(query: unknown): string {
 export function parsePlaylistId(input: unknown): string | null {
   if (typeof input !== "string") return null;
   const trimmed = input.trim();
-  if (PLAYLIST_ID_REGEX.test(trimmed) && trimmed.length <= 64) {
-    return trimmed;
-  }
+  if (!trimmed) return null;
+
   try {
-    const url = new URL(trimmed);
-    const list = url.searchParams.get("list");
-    if (list && PLAYLIST_ID_REGEX.test(list)) return list;
+    const url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    if (url.hostname.includes("youtube.com") || url.hostname === "youtu.be") {
+      const list = url.searchParams.get("list");
+      if (list && PLAYLIST_LIST_PARAM_REGEX.test(list)) return list;
+    }
   } catch {
     const match = trimmed.match(/[?&]list=([a-zA-Z0-9_-]+)/);
     if (match?.[1]) return match[1];
+  }
+
+  if (BARE_PLAYLIST_ID_REGEX.test(trimmed) && trimmed.length <= 64) {
+    return trimmed;
   }
   return null;
 }
@@ -158,9 +165,16 @@ export async function searchVideos(
   query: string,
   pageToken = ""
 ): Promise<SearchResponse> {
+  const browse = await searchYouTubeBrowse(query, pageToken);
+  if (browse.items.length > 0 || browse.nextPageToken) {
+    return browse;
+  }
+
   const apiKey = getApiKey();
   if (!apiKey) {
-    return { items: [], nextPageToken: null, error: "YouTube API key not configured" };
+    return browse.error
+      ? browse
+      : { items: [], nextPageToken: null, error: "No videos found" };
   }
 
   const cacheKey = `search:${query}:${pageToken}`;
@@ -207,13 +221,20 @@ export async function searchVideos(
 }
 
 export async function importPlaylist(playlistId: string): Promise<PlaylistResponse> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    return { playlistId, title: "", items: [], error: "YouTube API key not configured" };
-  }
-
   if (!PLAYLIST_ID_REGEX.test(playlistId) || playlistId.length > 64) {
     return { playlistId, title: "", items: [], error: "Invalid playlist ID" };
+  }
+
+  const browse = await importYouTubeBrowsePlaylist(playlistId);
+  if (browse.items.length > 0) {
+    return browse;
+  }
+
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return browse.error
+      ? browse
+      : { playlistId, title: "", items: [], error: "Playlist not found" };
   }
 
   const cacheKey = `playlist:${playlistId}`;

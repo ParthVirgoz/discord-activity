@@ -6,6 +6,7 @@ import {
   formatDuration,
   clearYouTubeCache,
 } from "../src/services/youtube";
+import { extractVideoIdFromPipedUrl } from "../src/services/piped";
 import { checkRateLimit, resetRateLimits } from "../src/utils/rateLimit";
 
 describe("YouTube service utils", () => {
@@ -27,12 +28,19 @@ describe("YouTube service utils", () => {
       "PLabc123XYZ"
     );
     assert.strictEqual(parsePlaylistId("not valid!"), null);
+    assert.strictEqual(parsePlaylistId("hello"), null);
+    assert.strictEqual(parsePlaylistId("music"), null);
   });
 
   it("converts ISO durations", () => {
     assert.strictEqual(isoDurationToSeconds("PT4M13S"), 253);
     assert.strictEqual(formatDuration(253), "4:13");
     assert.strictEqual(formatDuration(3661), "1:01:01");
+  });
+
+  it("extracts video IDs from piped URLs", () => {
+    assert.strictEqual(extractVideoIdFromPipedUrl("/watch?v=dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+    assert.strictEqual(extractVideoIdFromPipedUrl("invalid"), null);
   });
 
   it("rate limits requests per key", () => {
