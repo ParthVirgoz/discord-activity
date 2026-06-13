@@ -2,11 +2,9 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   isDiscordActivity,
   discordRuntimePath,
-  getServerProxyPrefix,
-  getYouTubeEmbedBase,
-  getYouTubeThumbnailUrl,
   getYouTubeEmbedPostMessageTarget,
 } from "./discordUrls.js";
+import { buildYouTubeEmbedUrl } from "./youtubeEmbed.js";
 
 describe("discordUrls", () => {
   afterEach(() => {
@@ -24,25 +22,23 @@ describe("discordUrls", () => {
       location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
     });
     expect(discordRuntimePath("/colyseus")).toBe("/.proxy/colyseus");
-    expect(discordRuntimePath("/youtube-nocookie")).toBe("/.proxy/youtube-nocookie");
-    expect(getYouTubeEmbedBase()).toBe("/.proxy/youtube-nocookie");
   });
 
-  it("uses direct URLs outside Discord", () => {
+  it("uses server player wrapper URL in Discord", () => {
     vi.stubGlobal("window", {
-      location: { hostname: "localhost", search: "", origin: "http://localhost:5173" },
+      location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com", href: "https://12345.discordsays.com/" },
     });
-    expect(getServerProxyPrefix()).toMatch(/\/colyseus$/);
-    expect(getYouTubeEmbedBase()).toBe("https://www.youtube-nocookie.com");
-    expect(getYouTubeThumbnailUrl("dQw4w9WgXcQ")).toBe(
-      "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
-    );
+    vi.stubEnv("VITE_COLYSEUS_URL", "/.proxy/colyseus");
+    const url = buildYouTubeEmbedUrl("dQw4w9WgXcQ", 0, true);
+    expect(url).toContain("/.proxy/colyseus/api/youtube/player/dQw4w9WgXcQ");
+    expect(url).not.toContain("youtube-nocookie");
   });
 
-  it("uses wildcard postMessage target in Discord", () => {
+  it("uses direct postMessage target in Discord", () => {
+    const origin = "https://12345.discordsays.com";
     vi.stubGlobal("window", {
-      location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
+      location: { hostname: "12345.discordsays.com", search: "", origin },
     });
-    expect(getYouTubeEmbedPostMessageTarget()).toBe("*");
+    expect(getYouTubeEmbedPostMessageTarget(origin)).toBe(origin);
   });
 });

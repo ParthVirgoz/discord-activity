@@ -16,16 +16,18 @@ describe("isRawIpHost", () => {
 describe("buildYouTubeEmbedUrl", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
-  it("uses proxied youtube-nocookie path in Discord", () => {
+  it("uses server player wrapper in Discord", () => {
     vi.stubGlobal("window", {
       location: { hostname: "123.discordsays.com", search: "", origin: "https://123.discordsays.com", href: "https://123.discordsays.com/" },
     });
+    vi.stubEnv("VITE_COLYSEUS_URL", "/.proxy/colyseus");
     const url = buildYouTubeEmbedUrl("dQw4w9WgXcQ", 0, true);
-    expect(url).toContain("/.proxy/youtube-nocookie/embed/dQw4w9WgXcQ");
-    expect(url).toContain("enablejsapi=1");
+    expect(url).toContain("/.proxy/colyseus/api/youtube/player/dQw4w9WgXcQ");
     expect(url).toContain("autoplay=1");
+    expect(url).toContain("origin=");
   });
 
   it("supports youtube-nocookie embed host outside Discord", () => {

@@ -1,4 +1,4 @@
-import { isDiscordActivity, getYouTubeEmbedBase } from "./discordUrls.js";
+import { isDiscordActivity, getServerProxyPrefix } from "./discordUrls.js";
 
 /** True when the page is served from a raw IP — YouTube often blocks music/copyright embeds in that case. */
 export function isRawIpHost(
@@ -21,14 +21,26 @@ export function buildYouTubeEmbedUrl(
   pageOrigin = typeof window !== "undefined" ? window.location.origin : "",
   pageHref = typeof window !== "undefined" ? window.location.href : ""
 ): string {
-  const base = isDiscordActivity()
-    ? getYouTubeEmbedBase()
-    : embedHost === "youtube"
+  const start = String(Math.max(0, Math.floor(startSec)));
+  const params = new URLSearchParams({
+    start,
+    origin: pageOrigin,
+  });
+  if (autoplay) params.set("autoplay", "1");
+
+  // Discord: proxied youtube-nocookie returns a broken 58-byte error page (JS can't load).
+  // Use our server player wrapper → inner iframe loads youtube.com directly.
+  if (isDiscordActivity()) {
+    return `${getServerProxyPrefix()}/api/youtube/player/${encodeURIComponent(videoId)}?${params}`;
+  }
+
+  const base =
+    embedHost === "youtube"
       ? "https://www.youtube.com"
       : "https://www.youtube-nocookie.com";
 
-  const params = new URLSearchParams({
-    start: String(Math.max(0, Math.floor(startSec))),
+  const embedParams = new URLSearchParams({
+    start,
     rel: "0",
     modestbranding: "1",
     playsinline: "1",
@@ -36,7 +48,7 @@ export function buildYouTubeEmbedUrl(
     origin: pageOrigin,
     widget_referrer: pageHref,
   });
-  if (autoplay) params.set("autoplay", "1");
+  if (autoplay) embedParams.set("autoplay", "1");
 
-  return `${base}/embed/${encodeURIComponent(videoId)}?${params}`;
+  return `${base}/embed/${encodeURIComponent(videoId)}?${embedParams}`;
 }

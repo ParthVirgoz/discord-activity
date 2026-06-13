@@ -8,8 +8,24 @@ import {
   sanitizeSearchQuery,
   parsePlaylistId,
 } from "../services/youtube";
+import { buildYouTubePlayerPage, parsePlayerQuery } from "../services/youtubePlayerPage";
 
 const router = Router();
+
+/** HTML wrapper that embeds YouTube directly (proxied youtube.com breaks inside Discord). */
+router.get("/player/:videoId", (req, res) => {
+  const videoId = req.params.videoId;
+  if (!isValidVideoId(videoId)) {
+    res.status(400).end();
+    return;
+  }
+
+  const { startSec, autoplay, origin } = parsePlayerQuery(req.query as Record<string, unknown>);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.removeHeader("X-Frame-Options");
+  res.send(buildYouTubePlayerPage(videoId, { startSec, autoplay, origin }));
+});
 
 router.get("/thumbnail/:videoId", async (req, res) => {
   const videoId = req.params.videoId;

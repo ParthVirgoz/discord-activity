@@ -15,7 +15,6 @@ export function setupDiscordNetworking(): void {
   patchUrlMappings(
     [
       { prefix: "/colyseus", target: SERVER_HOST },
-      { prefix: "/youtube-nocookie", target: "www.youtube-nocookie.com" },
       { prefix: "/ytimg", target: "i.ytimg.com" },
     ],
     { patchSrcAttributes: true }
