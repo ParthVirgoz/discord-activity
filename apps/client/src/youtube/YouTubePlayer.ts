@@ -6,8 +6,8 @@
 
 import { buildYouTubeEmbedUrl } from "../utils/youtubeEmbed.js";
 import {
-  getYouTubeEmbedMessageOrigins,
   getYouTubeEmbedPostMessageTarget,
+  isDiscordActivity,
 } from "../utils/discordUrls.js";
 
 export type YtPlayerState =
@@ -40,13 +40,11 @@ export type PlayerEventHandler = {
   onError?: (errorCode: number) => void;
 };
 
-function acceptedMessageOrigins(): string[] {
-  return getYouTubeEmbedMessageOrigins();
-}
-
 function postMessageTarget(): string {
   return getYouTubeEmbedPostMessageTarget();
 }
+
+const DISCORD_AUTOPLAY_RETRIES = 8;
 
 function buildEmbedUrl(videoId: string, startSec: number, autoplay: boolean): string {
   return buildYouTubeEmbedUrl(videoId, startSec, autoplay);
@@ -87,6 +85,8 @@ export class PostMessageVideoPlayer implements VideoPlayer {
   private lastState: YtPlayerState = "unstarted";
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
+  private autoplayRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
     this.onReady = handlers.onReady;
@@ -112,6 +112,9 @@ export class PostMessageVideoPlayer implements VideoPlayer {
       this.notifyListening();
       this.subscribeToPlayerEvents();
       this.startInfoPolling();
+      if (isDiscordActivity() && this.playing) {
+        this.scheduleDiscordAutoplayKick();
+      }
       if (!this.ready) {
         this.ready = true;
         this.onReady?.();
@@ -149,7 +152,6 @@ export class PostMessageVideoPlayer implements VideoPlayer {
   }
 
   private handleMessage(event: MessageEvent) {
-    if (!acceptedMessageOrigins().includes(event.origin)) return;
     if (event.source !== this.iframe.contentWindow) return;
 
     let data: Record<string, unknown>;
@@ -185,6 +187,24 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     this.postCommand("addEventListener", ["onStateChange"]);
     this.postCommand("addEventListener", ["onVideoProgress"]);
     this.postCommand("addEventListener", ["onError"]);
+  }
+
+  private clearAutoplayRetry() {
+    if (this.autoplayRetryTimer) {
+      clearTimeout(this.autoplayRetryTimer);
+      this.autoplayRetryTimer = null;
+    }
+  }
+
+  /** Discord proxy embeds often ignore the first play command — retry briefly. */
+  private scheduleDiscordAutoplayKick(attempt = 0) {
+    this.clearAutoplayRetry();
+    if (!this.playing || attempt >= DISCORD_AUTOPLAY_RETRIES) return;
+
+    this.postCommand("playVideo");
+    this.autoplayRetryTimer = setTimeout(() => {
+      this.scheduleDiscordAutoplayKick(attempt + 1);
+    }, 400);
   }
 
   private postCommand(func: string, args: (string | number | boolean)[] = []) {
@@ -240,6 +260,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
       this.videoId = videoId;
       this.ready = false;
       this.resetReadyPromise();
+      this.clearAutoplayRetry();
       this.iframe.src = buildEmbedUrl(videoId, startTime, autoplay);
       return;
     }
@@ -309,6 +330,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
   }
 
   destroy(): void {
+    this.clearAutoplayRetry();
     if (this.pollTimer) clearInterval(this.pollTimer);
     window.removeEventListener("message", this.messageHandler);
     this.iframe.remove();

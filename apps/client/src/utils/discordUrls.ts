@@ -8,28 +8,39 @@ export function isDiscordActivity(
 }
 
 /**
+ * Runtime path inside Discord's iframe.
+ * Portal mapping uses `/colyseus` (no `.proxy`), but requests at runtime use `/.proxy/colyseus`.
+ */
+export function discordRuntimePath(portalPath: string): string {
+  const normalized = portalPath.startsWith("/") ? portalPath : `/${portalPath}`;
+  if (!isDiscordActivity()) return normalized;
+  if (normalized.startsWith("/.proxy/")) return normalized;
+  return `/.proxy${normalized}`;
+}
+
+/**
  * Colyseus / API prefix.
- * Must match Discord URL mapping `/colyseus` → your server (no `.proxy` in the prefix).
+ * Production Discord: `/.proxy/colyseus` (set VITE_COLYSEUS_URL on Vercel).
+ * Local dev: `/colyseus` (Vite proxy).
  */
 export function getServerProxyPrefix(): string {
   const configured = import.meta.env.VITE_COLYSEUS_URL;
   if (typeof configured === "string" && configured.length > 0) return configured.replace(/\/$/, "");
+  if (isDiscordActivity()) return discordRuntimePath("/colyseus");
   return "/colyseus";
 }
 
 /**
- * YouTube embed host for iframe src.
- * In Discord, map `/youtube-nocookie` → `www.youtube-nocookie.com` in the Developer Portal.
+ * YouTube embed base for iframe src.
+ * Portal: `/youtube-nocookie` → `www.youtube-nocookie.com`
+ * Runtime in Discord: `/.proxy/youtube-nocookie`
  */
 export function getYouTubeEmbedBase(): string {
-  if (isDiscordActivity()) return "/youtube-nocookie";
+  if (isDiscordActivity()) return discordRuntimePath("/youtube-nocookie");
   return "https://www.youtube-nocookie.com";
 }
 
-/**
- * Thumbnail URL for <img> tags.
- * Discord blocks direct ytimg.com — proxied through our server via `/colyseus` mapping.
- */
+/** Thumbnail URL — proxied through our server in Discord. */
 export function getYouTubeThumbnailUrl(videoId: string): string {
   const id = encodeURIComponent(videoId);
   if (isDiscordActivity()) {
@@ -40,16 +51,16 @@ export function getYouTubeThumbnailUrl(videoId: string): string {
 
 /** Origins accepted for YouTube iframe postMessage (includes Discord proxy). */
 export function getYouTubeEmbedMessageOrigins(pageOrigin = window.location.origin): string[] {
-  const origins = new Set([
+  return [
     "https://www.youtube.com",
     "https://www.youtube-nocookie.com",
     pageOrigin,
-  ]);
-  return [...origins];
+  ];
 }
 
 /** Target origin when posting commands into the YouTube iframe. */
 export function getYouTubeEmbedPostMessageTarget(pageOrigin = window.location.origin): string {
-  return isDiscordActivity() ? pageOrigin : "https://www.youtube-nocookie.com";
+  if (isDiscordActivity()) return "*";
+  return "https://www.youtube-nocookie.com";
 }
 

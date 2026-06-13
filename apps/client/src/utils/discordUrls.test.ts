@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   isDiscordActivity,
+  discordRuntimePath,
   getServerProxyPrefix,
   getYouTubeEmbedBase,
   getYouTubeThumbnailUrl,
-  getYouTubeEmbedMessageOrigins,
   getYouTubeEmbedPostMessageTarget,
 } from "./discordUrls.js";
 
@@ -19,15 +19,13 @@ describe("discordUrls", () => {
     expect(isDiscordActivity("localhost", "")).toBe(false);
   });
 
-  it("uses proxied paths in Discord", () => {
+  it("maps portal paths to /.proxy runtime paths in Discord", () => {
     vi.stubGlobal("window", {
       location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
     });
-    expect(getServerProxyPrefix()).toBe("/colyseus");
-    expect(getYouTubeEmbedBase()).toBe("/youtube-nocookie");
-    expect(getYouTubeThumbnailUrl("dQw4w9WgXcQ")).toBe(
-      "/colyseus/api/youtube/thumbnail/dQw4w9WgXcQ"
-    );
+    expect(discordRuntimePath("/colyseus")).toBe("/.proxy/colyseus");
+    expect(discordRuntimePath("/youtube-nocookie")).toBe("/.proxy/youtube-nocookie");
+    expect(getYouTubeEmbedBase()).toBe("/.proxy/youtube-nocookie");
   });
 
   it("uses direct URLs outside Discord", () => {
@@ -41,16 +39,10 @@ describe("discordUrls", () => {
     );
   });
 
-  it("includes Discord origin for YouTube postMessage", () => {
-    const origin = "https://12345.discordsays.com";
-    expect(getYouTubeEmbedMessageOrigins(origin)).toContain(origin);
-    expect(getYouTubeEmbedPostMessageTarget(origin)).toBe(
-      "https://www.youtube-nocookie.com"
-    );
-
+  it("uses wildcard postMessage target in Discord", () => {
     vi.stubGlobal("window", {
-      location: { hostname: "12345.discordsays.com", search: "", origin },
+      location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
     });
-    expect(getYouTubeEmbedPostMessageTarget(origin)).toBe(origin);
+    expect(getYouTubeEmbedPostMessageTarget()).toBe("*");
   });
 });

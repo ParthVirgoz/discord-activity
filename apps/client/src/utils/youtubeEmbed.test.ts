@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { isRawIpHost, buildYouTubeEmbedUrl } from "./youtubeEmbed.js";
 
 describe("isRawIpHost", () => {
@@ -14,19 +14,39 @@ describe("isRawIpHost", () => {
 });
 
 describe("buildYouTubeEmbedUrl", () => {
-  it("supports youtube-nocookie embed host", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses proxied youtube-nocookie path in Discord", () => {
+    vi.stubGlobal("window", {
+      location: { hostname: "123.discordsays.com", search: "", origin: "https://123.discordsays.com", href: "https://123.discordsays.com/" },
+    });
+    const url = buildYouTubeEmbedUrl("dQw4w9WgXcQ", 0, true);
+    expect(url).toContain("/.proxy/youtube-nocookie/embed/dQw4w9WgXcQ");
+    expect(url).toContain("enablejsapi=1");
+    expect(url).toContain("autoplay=1");
+  });
+
+  it("supports youtube-nocookie embed host outside Discord", () => {
+    vi.stubGlobal("window", {
+      location: { hostname: "localhost", search: "", origin: "http://localhost:5173", href: "http://localhost:5173/" },
+    });
     const url = buildYouTubeEmbedUrl(
       "dQw4w9WgXcQ",
       0,
       true,
       "nocookie",
-      "https://123.discordsays.com",
-      "https://123.discordsays.com/"
+      "https://example.com",
+      "https://example.com/"
     );
     expect(url).toContain("youtube-nocookie.com");
   });
 
   it("includes origin, widget_referrer, and enablejsapi", () => {
+    vi.stubGlobal("window", {
+      location: { hostname: "localhost", search: "", origin: "https://synctube.vercel.app", href: "https://synctube.vercel.app/" },
+    });
     const url = buildYouTubeEmbedUrl("dQw4w9WgXcQ", 0, true, "youtube", "https://synctube.vercel.app", "https://synctube.vercel.app/");
     expect(url).toContain("enablejsapi=1");
     expect(url).toContain("origin=https%3A%2F%2Fsynctube.vercel.app");
