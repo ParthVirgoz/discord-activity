@@ -108,6 +108,61 @@ describe("WatchRoom", () => {
     await rejoined.leave();
   });
 
+  it("does not change playback when a second user joins", async () => {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
+      channelId: TEST_CHANNEL,
+    });
+    const host = await connectAs(colyseus, room, "host");
+    host.send("loadVideo", {
+      videoId: "dQw4w9WgXcQ",
+      title: "Playing",
+      durationSec: 212,
+      autoPlay: true,
+    });
+    await room.waitForNextPatch();
+    host.send("seek", { currentTime: 42 });
+    await room.waitForNextPatch();
+
+    assert.strictEqual(room.state.videoId, "dQw4w9WgXcQ");
+    assert.strictEqual(room.state.isPlaying, true);
+    assert.strictEqual(room.state.currentTime, 42);
+
+    await connectAs(colyseus, room, "viewer");
+    await room.waitForNextPatch();
+
+    assert.strictEqual(room.state.videoId, "dQw4w9WgXcQ");
+    assert.strictEqual(room.state.isPlaying, true);
+    assert.strictEqual(room.state.currentTime, 42);
+    assert.strictEqual(room.state.queue.length, 1);
+  });
+
+  it("playQueueItem works for already-played videos", async () => {
+    const room = await colyseus.createRoom<WatchRoomState>("my_room", {
+      channelId: TEST_CHANNEL,
+    });
+    const host = await connectAs(colyseus, room, "host");
+    host.send("addBatchToQueue", {
+      items: [
+        { videoId: "dQw4w9WgXcQ", title: "One", durationSec: 212 },
+        { videoId: "9bZkp7q19f0", title: "Two", durationSec: 200 },
+      ],
+    });
+    await room.waitForNextPatch();
+    host.send("videoEnded", {});
+    await room.waitForNextPatch();
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.strictEqual(room.state.queue[0].status, "played");
+    assert.strictEqual(room.state.queue[1].status, "playing");
+
+    host.send("playQueueItem", { index: 0 });
+    await room.waitForNextPatch();
+
+    assert.strictEqual(room.state.videoId, "dQw4w9WgXcQ");
+    assert.strictEqual(room.state.queue[0].status, "playing");
+    assert.strictEqual(room.state.isPlaying, true);
+  });
+
   it("transfers host when current host picks another viewer", async () => {
     const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
