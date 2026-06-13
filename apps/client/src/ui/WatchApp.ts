@@ -461,6 +461,12 @@ export class WatchApp {
     });
   }
 
+  private externalImg(src: string, className = "", lazy = false): string {
+    const cls = className ? ` class="${className}"` : "";
+    const loading = lazy ? ' loading="lazy"' : "";
+    return `<img src="${this.escapeAttr(src)}" alt="" referrerpolicy="no-referrer"${cls}${loading} />`;
+  }
+
   private setHostUI(isHost: boolean) {
     this.isHost = isHost;
     const label = this.root.querySelector("#host-menu-label") as HTMLElement;
@@ -499,7 +505,7 @@ export class WatchApp {
     const showMember = this.isHost ? me : hostMember;
 
     if (showMember?.avatarUrl) {
-      el.innerHTML = `<img src="${this.escapeAttr(showMember.avatarUrl)}" alt="" />`;
+      el.innerHTML = this.externalImg(showMember.avatarUrl);
     } else if (showMember?.username) {
       el.textContent = showMember.username.charAt(0).toUpperCase();
     } else {
@@ -632,11 +638,11 @@ export class WatchApp {
     for (const video of items) {
       const card = document.createElement("article");
       card.className = "yt-browse-card";
-      const thumbUrl = video.thumbnail || getYouTubeThumbnail(video.videoId);
+      const thumbUrl = getYouTubeThumbnail(video.videoId);
 
       card.innerHTML = `
         <div class="yt-browse-thumb-wrap">
-          <img src="${this.escapeAttr(thumbUrl)}" alt="" class="yt-browse-thumb" loading="lazy" />
+          ${this.externalImg(thumbUrl, "yt-browse-thumb", true)}
           ${video.duration ? `<span class="yt-browse-duration">${this.escapeHtml(video.duration)}</span>` : ""}
           <div class="yt-add-queue-overlay">
             <button type="button" class="yt-add-queue-btn" aria-label="Add to playlist">
@@ -927,7 +933,7 @@ export class WatchApp {
       const isRoomHost = sessionId === this.room.state.hostSessionId;
       const isMe = sessionId === this.room.sessionId;
       const avatar = member.avatarUrl
-        ? `<img src="${this.escapeAttr(member.avatarUrl)}" alt="" class="dropdown-avatar" />`
+        ? this.externalImg(member.avatarUrl, "dropdown-avatar")
         : `<span class="dropdown-avatar dropdown-avatar--fallback">${this.escapeHtml(member.username.charAt(0).toUpperCase())}</span>`;
 
       li.innerHTML = `
@@ -983,7 +989,7 @@ export class WatchApp {
     if (member?.avatarUrl) {
       return `
         <div class="queue-row-user">
-          <img src="${this.escapeAttr(member.avatarUrl)}" alt="" class="queue-row-user-avatar" />
+          ${this.externalImg(member.avatarUrl, "queue-row-user-avatar")}
           <span class="queue-row-user-name">${this.escapeHtml(name)}</span>
         </div>
       `;
@@ -1173,7 +1179,7 @@ export class WatchApp {
       li.innerHTML = `
         ${leadCol}
         <div class="queue-row-thumb-wrap${canPlayItem ? " queue-row-thumb-wrap--playable" : ""}${isUnavailable ? " queue-row-thumb-wrap--unavailable" : ""}${isPlaying ? " queue-row-thumb-wrap--active" : ""}">
-          <img src="${this.escapeAttr(thumbUrl)}" alt="" class="queue-row-thumb${isUnavailable ? " queue-row-thumb--dimmed" : ""}${isPlaying ? " queue-row-thumb--dimmed" : ""}" loading="lazy" />
+          ${this.externalImg(thumbUrl, `queue-row-thumb${isUnavailable ? " queue-row-thumb--dimmed" : ""}${isPlaying ? " queue-row-thumb--dimmed" : ""}`, true)}
           ${duration ? `<span class="queue-row-duration">${this.escapeHtml(duration)}</span>` : ""}
           ${thumbOverlay}
         </div>
@@ -1274,11 +1280,9 @@ export class WatchApp {
     if (!this.player || !sync.videoId) return;
 
     this.lastSync = sync;
-    await this.player.waitForReady();
 
     if (sync.isPlaying) {
       this.applyPlay(0);
-      await new Promise((r) => setTimeout(r, 400));
       if (!this.player.isPlaying()) {
         this.player.play(0);
       }

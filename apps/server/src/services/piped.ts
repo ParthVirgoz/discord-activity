@@ -82,7 +82,7 @@ function streamToVideo(item: PipedStreamItem): YouTubeVideoResult | null {
     videoId,
     title: sanitizeTitle(item.title ?? "Unknown"),
     channel: sanitizeTitle(item.uploaderName ?? ""),
-    thumbnail: typeof item.thumbnail === "string" ? item.thumbnail : "",
+    thumbnail: youtubeThumbUrl(videoId),
     duration: durationSec > 0 ? formatDuration(durationSec) : "",
   };
 }

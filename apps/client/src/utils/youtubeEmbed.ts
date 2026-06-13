@@ -9,11 +9,20 @@ export function isRawIpHost(
   return false;
 }
 
+/** True when running inside Discord's activity iframe (discordsays.com). */
+export function isDiscordActivity(
+  hostname = typeof window !== "undefined" ? window.location.hostname : "",
+  search = typeof window !== "undefined" ? window.location.search : ""
+): boolean {
+  if (hostname.includes("discordsays.com")) return true;
+  return new URLSearchParams(search).has("frame_id");
+}
+
 export function buildYouTubeEmbedUrl(
   videoId: string,
   startSec: number,
   autoplay: boolean,
-  embedHost: "youtube" | "nocookie" = "youtube",
+  embedHost: "youtube" | "nocookie" = isDiscordActivity() ? "nocookie" : "youtube",
   pageOrigin = typeof window !== "undefined" ? window.location.origin : "",
   pageHref = typeof window !== "undefined" ? window.location.href : ""
 ): string {

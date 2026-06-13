@@ -14,6 +14,18 @@ describe("isRawIpHost", () => {
 });
 
 describe("buildYouTubeEmbedUrl", () => {
+  it("supports youtube-nocookie embed host", () => {
+    const url = buildYouTubeEmbedUrl(
+      "dQw4w9WgXcQ",
+      0,
+      true,
+      "nocookie",
+      "https://123.discordsays.com",
+      "https://123.discordsays.com/"
+    );
+    expect(url).toContain("youtube-nocookie.com");
+  });
+
   it("includes origin, widget_referrer, and enablejsapi", () => {
     const url = buildYouTubeEmbedUrl("dQw4w9WgXcQ", 0, true, "youtube", "https://synctube.vercel.app", "https://synctube.vercel.app/");
     expect(url).toContain("enablejsapi=1");

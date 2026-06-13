@@ -101,10 +101,6 @@ function extractVideosFromInnertube(data: unknown): YouTubeVideoResult[] {
     const vr = obj.videoRenderer as Record<string, unknown> | undefined;
     if (vr && typeof vr.videoId === "string" && isValidVideoId(vr.videoId)) {
       const videoId = vr.videoId;
-      const thumbs = (vr.thumbnail as { thumbnails?: { url?: string }[] })?.thumbnails;
-      const thumbUrl =
-        thumbs?.length ? thumbs[thumbs.length - 1]?.url ?? youtubeThumb(videoId) : youtubeThumb(videoId);
-
       const durationLabel =
         parseDurationLabel(parseTextRuns(vr.lengthText)) ||
         parseDurationLabel(
@@ -118,7 +114,7 @@ function extractVideosFromInnertube(data: unknown): YouTubeVideoResult[] {
         channel: sanitizeTitle(
           parseTextRuns(vr.ownerText) || parseTextRuns(vr.longBylineText) || ""
         ),
-        thumbnail: thumbUrl,
+        thumbnail: youtubeThumb(videoId),
         duration: durationLabel,
       });
     }

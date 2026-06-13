@@ -126,7 +126,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
       if (!this.videoId) return;
       this.postCommand("getVideoData");
       this.postCommand("getCurrentTime");
-    }, 2000);
+    }, 500);
   }
 
   private resetReadyPromise() {

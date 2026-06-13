@@ -70,13 +70,6 @@ interface InvidiousVideo {
 
 function invidiousToVideo(entry: InvidiousVideo): YouTubeVideoResult | null {
   if (!entry.videoId || !isValidVideoId(entry.videoId)) return null;
-  const thumbs = entry.videoThumbnails ?? [];
-  const best =
-    thumbs.find((t) => t.quality === "medium")?.url ??
-    thumbs.find((t) => t.quality === "high")?.url ??
-    thumbs[0]?.url ??
-    youtubeThumbUrl(entry.videoId);
-
   const durationSec =
     typeof entry.lengthSeconds === "number" ? Math.max(0, entry.lengthSeconds) : 0;
 
@@ -84,7 +77,7 @@ function invidiousToVideo(entry: InvidiousVideo): YouTubeVideoResult | null {
     videoId: entry.videoId,
     title: sanitizeTitle(entry.title ?? "Unknown"),
     channel: sanitizeTitle(entry.author ?? ""),
-    thumbnail: best,
+    thumbnail: youtubeThumbUrl(entry.videoId),
     duration: durationSec > 0 ? formatDuration(durationSec) : "",
   };
 }

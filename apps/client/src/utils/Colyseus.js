@@ -1,4 +1,8 @@
 import { Client } from "@colyseus/sdk";
-// export const colyseusSDK = new Client('https://meet-hunt-kazakhstan-attraction.trycloudflare.com');
-// export const colyseusSDK = new Client('https://de-fra-90499d00.colyseus.dev');
-export const colyseusSDK = new Client(import.meta.env.VITE_COLYSEUS_URL);
+function resolveColyseusUrl() {
+    if (typeof window !== "undefined" && window.location.hostname.includes("discordsays.com")) {
+        return "/.proxy/colyseus";
+    }
+    return import.meta.env.VITE_COLYSEUS_URL || "/colyseus";
+}
+export const colyseusSDK = new Client(resolveColyseusUrl());

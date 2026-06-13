@@ -56,17 +56,11 @@ export function snippetToVideo(
   videoId: string,
   durationSec = 0
 ): YouTubeVideoResult {
-  const thumb =
-    snippet.thumbnails?.high?.url ??
-    snippet.thumbnails?.medium?.url ??
-    snippet.thumbnails?.default?.url ??
-    youtubeThumbUrl(videoId);
-
   return {
     videoId,
     title: sanitizeTitle(snippet.title ?? "Unknown"),
     channel: sanitizeTitle(snippet.channelTitle ?? ""),
-    thumbnail: thumb,
+    thumbnail: youtubeThumbUrl(videoId),
     duration: durationSec > 0 ? formatDuration(durationSec) : "",
   };
 }
