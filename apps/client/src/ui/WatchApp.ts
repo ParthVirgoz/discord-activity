@@ -53,6 +53,8 @@ export class WatchApp {
   private lastSync: SyncPayload | null = null;
   private pendingForceSync = false;
   private syncTimer: ReturnType<typeof setInterval> | null = null;
+  private controlsTimer: ReturnType<typeof setInterval> | null = null;
+  private isScrubbing = false;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
@@ -92,6 +94,26 @@ export class WatchApp {
                   <span>Add videos from the search panel</span>
                   ${iconHtml("arrow-right", 16, "ui-icon ui-icon--inline")}
                 </p>
+              </div>
+              <div id="player-controls" class="player-controls hidden" aria-label="Video controls">
+                <div class="player-controls-gradient"></div>
+                <div class="player-controls-bar">
+                  <p id="player-controls-title" class="player-controls-title"></p>
+                  <div class="player-controls-row">
+                    <button type="button" id="player-skip-back" class="player-ctrl-btn" aria-label="Back 10 seconds" disabled>
+                      ${iconHtml("skip-back", 18, "ui-icon")}
+                    </button>
+                    <button type="button" id="player-play-btn" class="player-ctrl-btn player-ctrl-btn--primary" aria-label="Play" disabled>
+                      ${iconHtml("play", 20, "ui-icon")}
+                    </button>
+                    <button type="button" id="player-skip-fwd" class="player-ctrl-btn" aria-label="Forward 10 seconds" disabled>
+                      ${iconHtml("skip", 18, "ui-icon")}
+                    </button>
+                    <span id="player-time-current" class="player-time">0:00</span>
+                    <input type="range" id="player-seek" class="player-seek" min="0" max="0" value="0" step="0.1" disabled aria-label="Seek" />
+                    <span id="player-time-duration" class="player-time">0:00</span>
+                  </div>
+                </div>
               </div>
               <div id="loading-overlay" class="player-loading hidden">
                 <div class="loading-spinner"></div>
@@ -213,6 +235,7 @@ export class WatchApp {
     });
 
     this.bindKeyboardControls();
+    this.bindPlayerControls();
 
     if (isRawIpHost()) {
       toast.show(
@@ -285,6 +308,115 @@ export class WatchApp {
       this.player.play(currentTime);
       this.room.send("play", { currentTime });
     }
+    this.updatePlayerControls();
+  }
+
+  private skipRelative(seconds: number) {
+    if (!this.player || !this.canControlPlayback()) return;
+    const duration = this.getEffectiveVideoDuration();
+    let t = this.player.getCurrentTime() + seconds;
+    if (duration > 0) t = Math.min(duration, t);
+    t = Math.max(0, t);
+    this.seekTo(t);
+    this.room.send("seek", { currentTime: t });
+    this.updatePlayerControls();
+  }
+
+  private bindPlayerControls() {
+    this.root.querySelector("#player-play-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.togglePlayPause();
+    });
+    this.root.querySelector("#player-skip-back")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.skipRelative(-10);
+    });
+    this.root.querySelector("#player-skip-fwd")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.skipRelative(10);
+    });
+
+    const seek = this.root.querySelector("#player-seek") as HTMLInputElement;
+    seek?.addEventListener("pointerdown", () => {
+      if (!this.canControlPlayback()) return;
+      this.isScrubbing = true;
+    });
+    seek?.addEventListener("input", () => {
+      if (!this.canControlPlayback()) return;
+      const t = Number(seek.value);
+      this.updatePlayerTimeLabels(t, Number(seek.max));
+    });
+    seek?.addEventListener("change", () => {
+      if (!this.canControlPlayback()) return;
+      const t = Number(seek.value);
+      this.isScrubbing = false;
+      this.seekTo(t);
+      this.room.send("seek", { currentTime: t });
+      if (this.lastSync) this.lastSync = { ...this.lastSync, currentTime: t };
+    });
+
+    this.root.querySelector(".player-wrap")?.addEventListener("dblclick", (e) => {
+      if ((e.target as HTMLElement).closest(".player-controls-bar")) return;
+      if (!this.canControlPlayback()) return;
+      this.togglePlayPause();
+    });
+  }
+
+  private updatePlayerTimeLabels(currentSec: number, durationSec: number) {
+    const currentEl = this.root.querySelector("#player-time-current");
+    const durationEl = this.root.querySelector("#player-time-duration");
+    if (currentEl) currentEl.textContent = formatDurationSeconds(Math.floor(currentSec));
+    if (durationEl) durationEl.textContent = formatDurationSeconds(Math.floor(durationSec));
+  }
+
+  private updatePlayerControls() {
+    const controls = this.root.querySelector("#player-controls");
+    const hasVideo = !!this.room.state.videoId && !!this.player;
+
+    controls?.classList.toggle("hidden", !hasVideo);
+    if (!hasVideo || !this.player) return;
+
+    const canControl = this.canControlPlayback();
+    controls?.classList.toggle("player-controls--readonly", !canControl);
+
+    const playBtn = this.root.querySelector("#player-play-btn") as HTMLButtonElement;
+    const skipBack = this.root.querySelector("#player-skip-back") as HTMLButtonElement;
+    const skipFwd = this.root.querySelector("#player-skip-fwd") as HTMLButtonElement;
+    const seek = this.root.querySelector("#player-seek") as HTMLInputElement;
+    const titleEl = this.root.querySelector("#player-controls-title");
+
+    if (titleEl) titleEl.textContent = this.room.state.videoTitle || "";
+
+    const playing = this.player.isPlaying();
+    if (playBtn) {
+      playBtn.disabled = !canControl;
+      playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+      playBtn.innerHTML = iconHtml(playing ? "pause" : "play", 20, "ui-icon");
+    }
+    if (skipBack) skipBack.disabled = !canControl;
+    if (skipFwd) skipFwd.disabled = !canControl;
+    if (seek) seek.disabled = !canControl;
+
+    const duration = this.getEffectiveVideoDuration();
+    const current = this.isScrubbing
+      ? Number(seek?.value ?? 0)
+      : canControl
+        ? this.player.getCurrentTime()
+        : this.getRoomEffectiveTime();
+
+    if (seek && duration > 0 && !this.isScrubbing) {
+      seek.max = String(duration);
+      seek.value = String(Math.min(duration, Math.max(0, current)));
+    } else if (seek && duration > 0 && this.isScrubbing) {
+      seek.max = String(duration);
+    }
+
+    this.updatePlayerTimeLabels(current, duration);
+  }
+
+  private startControlsTimer() {
+    if (this.controlsTimer) clearInterval(this.controlsTimer);
+    this.controlsTimer = setInterval(() => this.updatePlayerControls(), 250);
   }
 
   private toggleDropdown() {
@@ -536,6 +668,7 @@ export class WatchApp {
     );
 
     this.renderBrowseInteractivity();
+    this.updatePlayerControls();
   }
 
   private videoPayload(video: YouTubeVideoResult) {
@@ -769,6 +902,7 @@ export class WatchApp {
     }
 
     this.reportDurationToServer();
+    this.updatePlayerControls();
 
     if (state === "ended") {
       this.signalVideoEnded();
@@ -827,6 +961,7 @@ export class WatchApp {
       this.applySync(data.sync, true);
       this.startSyncTimer();
       this.startEndDetection();
+      this.startControlsTimer();
     });
 
     this.room.onMessage("play", (data: { currentTime: number }) => {
@@ -835,6 +970,7 @@ export class WatchApp {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: true };
       }
       this.applyPlay(data.currentTime);
+      this.updatePlayerControls();
     });
 
     this.room.onMessage("pause", (data: { currentTime: number }) => {
@@ -842,10 +978,13 @@ export class WatchApp {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: false };
       }
       this.applyPause(data.currentTime);
+      this.updatePlayerControls();
     });
 
     this.room.onMessage("seek", (data: { currentTime: number }) => {
       this.seekTo(data.currentTime);
+      if (this.lastSync) this.lastSync = { ...this.lastSync, currentTime: data.currentTime };
+      this.updatePlayerControls();
     });
 
     this.room.onMessage("setRate", (data: { rate: number; currentTime: number }) => {
@@ -1257,6 +1396,7 @@ export class WatchApp {
 
   private renderVideoTitle() {
     this.root.querySelector("#player-placeholder")?.classList.toggle("hidden", !!this.room.state.videoId);
+    this.updatePlayerControls();
   }
 
   private async applyVideoChange(sync: SyncPayload) {
@@ -1472,6 +1612,7 @@ export class WatchApp {
     if (this.keyboardHandler) {
       document.removeEventListener("keydown", this.keyboardHandler, true);
     }
+    if (this.controlsTimer) clearInterval(this.controlsTimer);
     this.clearUnavailableCheck();
     if (this.syncTimer) clearInterval(this.syncTimer);
     if (this.endCheckTimer) clearInterval(this.endCheckTimer);

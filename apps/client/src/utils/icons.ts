@@ -14,6 +14,8 @@ import {
   Info,
   X,
   SkipForward,
+  SkipBack,
+  Pause,
   ArrowRight,
   TriangleAlert,
   type IconNode,
@@ -35,6 +37,8 @@ export type AppIcon =
   | "warning"
   | "close"
   | "skip"
+  | "skip-back"
+  | "pause"
   | "arrow-right";
 
 const ICONS: Record<AppIcon, IconNode> = {
@@ -53,6 +57,8 @@ const ICONS: Record<AppIcon, IconNode> = {
   warning: TriangleAlert,
   close: X,
   skip: SkipForward,
+  "skip-back": SkipBack,
+  pause: Pause,
   "arrow-right": ArrowRight,
 };
 
