@@ -16,6 +16,10 @@ import { isDiscordActivity } from "../utils/discordUrls.js";
 const DRIFT_CHECK_INTERVAL_MS = 5000;
 const END_CHECK_INTERVAL_MS = 2000;
 const SYNC_APPLY_THRESHOLD = 0.5;
+/** Ignore echoed play/pause/seek from the room after local controller actions. */
+const LOCAL_SYNC_GRACE_MS = 2500;
+/** Only push controller drift to the room when clearly out of sync. */
+const CONTROLLER_DRIFT_PUSH_SEC = 2.5;
 /** Piped stream lookup + proxy can take 15s+ in Discord — don't mark unavailable too early. */
 const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 35_000 : 8_000;
 
@@ -55,6 +59,8 @@ export class WatchApp {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private controlsTimer: ReturnType<typeof setInterval> | null = null;
   private isScrubbing = false;
+  private suppressStateBroadcast = 0;
+  private ignoreRemotePlaybackUntil = 0;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
@@ -225,10 +231,13 @@ export class WatchApp {
       this.closeQueueMenu();
     });
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
-        this.syncPlaybackToRoom();
+      if (document.visibilityState === "hidden") return;
+
+      if (this.canControlPlayback()) {
+        this.withSuppressedStateBroadcast(() => {
+          void this.applySync(this.buildSyncFromRoom(), false);
+        });
       } else {
-        this.syncPlaybackToRoom();
         this.pendingForceSync = true;
         this.room.send("syncRequest", {});
       }
@@ -280,6 +289,7 @@ export class WatchApp {
       e.preventDefault();
       e.stopPropagation();
       const t = Math.max(0, this.player.getCurrentTime() - step);
+      this.markLocalPlaybackAction();
       this.seekTo(t);
       this.room.send("seek", { currentTime: t });
     } else if (e.key === "ArrowRight") {
@@ -290,8 +300,28 @@ export class WatchApp {
         duration > 0
           ? Math.min(duration, this.player.getCurrentTime() + step)
           : this.player.getCurrentTime() + step;
+      this.markLocalPlaybackAction();
       this.seekTo(t);
       this.room.send("seek", { currentTime: t });
+    }
+  }
+
+  private markLocalPlaybackAction(graceMs = LOCAL_SYNC_GRACE_MS) {
+    this.ignoreRemotePlaybackUntil = Date.now() + graceMs;
+  }
+
+  private shouldIgnoreRemotePlaybackApply(): boolean {
+    return this.canControlPlayback() && Date.now() < this.ignoreRemotePlaybackUntil;
+  }
+
+  private withSuppressedStateBroadcast(fn: () => void) {
+    this.suppressStateBroadcast += 1;
+    try {
+      fn();
+    } finally {
+      queueMicrotask(() => {
+        this.suppressStateBroadcast = Math.max(0, this.suppressStateBroadcast - 1);
+      });
     }
   }
 
@@ -299,13 +329,18 @@ export class WatchApp {
     this.blurActiveElement();
     if (!this.player || !this.canControlPlayback()) return;
 
+    this.markLocalPlaybackAction();
     const currentTime = this.player.getCurrentTime();
     if (this.player.isPlaying()) {
-      this.player.pause(currentTime);
+      this.withSuppressedStateBroadcast(() => {
+        this.player!.pause(currentTime);
+      });
       this.room.send("pause", { currentTime });
     } else {
       this.videoEndedSent = false;
-      this.player.play(currentTime);
+      this.withSuppressedStateBroadcast(() => {
+        this.player!.play(currentTime);
+      });
       this.room.send("play", { currentTime });
     }
     this.updatePlayerControls();
@@ -317,6 +352,7 @@ export class WatchApp {
     let t = this.player.getCurrentTime() + seconds;
     if (duration > 0) t = Math.min(duration, t);
     t = Math.max(0, t);
+    this.markLocalPlaybackAction();
     this.seekTo(t);
     this.room.send("seek", { currentTime: t });
     this.updatePlayerControls();
@@ -350,6 +386,7 @@ export class WatchApp {
       if (!this.canControlPlayback()) return;
       const t = Number(seek.value);
       this.isScrubbing = false;
+      this.markLocalPlaybackAction();
       this.seekTo(t);
       this.room.send("seek", { currentTime: t });
       if (this.lastSync) this.lastSync = { ...this.lastSync, currentTime: t };
@@ -909,6 +946,12 @@ export class WatchApp {
       return;
     }
 
+    // Browser background tab pauses video — don't broadcast that to the room.
+    if (document.hidden && this.canControlPlayback()) return;
+
+    // Ignore state events triggered by our own applyPlay/applyPause/seekTo.
+    if (this.suppressStateBroadcast > 0) return;
+
     if (!this.canControlPlayback()) {
       void this.applySync(this.buildSyncFromRoom(), true);
       return;
@@ -969,7 +1012,9 @@ export class WatchApp {
       if (this.lastSync) {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: true };
       }
-      this.applyPlay(data.currentTime);
+      if (!this.shouldIgnoreRemotePlaybackApply()) {
+        this.applyPlay(data.currentTime);
+      }
       this.updatePlayerControls();
     });
 
@@ -977,13 +1022,17 @@ export class WatchApp {
       if (this.lastSync) {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: false };
       }
-      this.applyPause(data.currentTime);
+      if (!this.shouldIgnoreRemotePlaybackApply()) {
+        this.applyPause(data.currentTime);
+      }
       this.updatePlayerControls();
     });
 
     this.room.onMessage("seek", (data: { currentTime: number }) => {
-      this.seekTo(data.currentTime);
       if (this.lastSync) this.lastSync = { ...this.lastSync, currentTime: data.currentTime };
+      if (!this.shouldIgnoreRemotePlaybackApply()) {
+        this.seekTo(data.currentTime);
+      }
       this.updatePlayerControls();
     });
 
@@ -1425,9 +1474,6 @@ export class WatchApp {
 
     if (sync.isPlaying) {
       this.applyPlay(0);
-      if (!this.player.isPlaying()) {
-        this.player.play(0);
-      }
       this.scheduleUnavailableCheck();
     } else {
       this.applyPause(0);
@@ -1520,27 +1566,38 @@ export class WatchApp {
 
   private applyPlay(currentTime: number) {
     if (!this.player) return;
-    const drift = Math.abs(this.player.getCurrentTime() - currentTime);
-    if (drift > SYNC_APPLY_THRESHOLD) {
-      this.player.play(currentTime);
-    } else if (!this.player.isPlaying()) {
-      this.player.play();
-    }
+    this.withSuppressedStateBroadcast(() => {
+      const drift = Math.abs(this.player!.getCurrentTime() - currentTime);
+      const playing = this.player!.isPlaying();
+      if (playing && drift <= SYNC_APPLY_THRESHOLD) return;
+      if (drift > SYNC_APPLY_THRESHOLD) {
+        this.player!.seek(currentTime);
+      }
+      if (!this.player!.isPlaying()) {
+        this.player!.play();
+      }
+    });
   }
 
   private applyPause(currentTime: number) {
     if (!this.player) return;
-    const drift = Math.abs(this.player.getCurrentTime() - currentTime);
-    if (drift > SYNC_APPLY_THRESHOLD) {
-      this.player.pause(currentTime);
-    } else if (this.player.isPlaying()) {
-      this.player.pause();
-    }
+    this.withSuppressedStateBroadcast(() => {
+      const drift = Math.abs(this.player!.getCurrentTime() - currentTime);
+      if (drift > SYNC_APPLY_THRESHOLD) {
+        this.player!.seek(currentTime);
+      }
+      if (this.player!.isPlaying()) {
+        this.player!.pause();
+      }
+    });
   }
 
   private seekTo(time: number) {
     if (!this.player) return;
-    this.player.seek(time);
+    this.withSuppressedStateBroadcast(() => {
+      if (Math.abs(this.player!.getCurrentTime() - time) <= 0.05) return;
+      this.player!.seek(time);
+    });
   }
 
   private startSyncTimer() {
@@ -1549,10 +1606,16 @@ export class WatchApp {
       if (!this.player || !this.lastSync) return;
 
       if (this.canControlPlayback()) {
+        if (Date.now() < this.ignoreRemotePlaybackUntil) return;
+
         const roomTime = this.getRoomEffectiveTime();
         const localTime = this.player.getCurrentTime();
         const roomPlaying = this.room.state.isPlaying;
-        if (Math.abs(localTime - roomTime) > 1 || this.player.isPlaying() !== roomPlaying) {
+        const drift = Math.abs(localTime - roomTime);
+        const playingMismatch = this.player.isPlaying() !== roomPlaying;
+
+        if (drift > CONTROLLER_DRIFT_PUSH_SEC || playingMismatch) {
+          this.markLocalPlaybackAction(1000);
           this.syncPlaybackToRoom();
         }
         return;

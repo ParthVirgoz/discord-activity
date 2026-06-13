@@ -133,7 +133,10 @@ export class HtmlVideoPlayer implements VideoPlayer {
   }
 
   private tryPlay(startTime?: number): void {
-    if (startTime !== undefined) this.video.currentTime = startTime;
+    if (startTime !== undefined) {
+      const drift = Math.abs(this.video.currentTime - startTime);
+      if (drift > 0.05) this.video.currentTime = startTime;
+    }
     this.wantsPlay = true;
     void this.video.play().catch(() => {
       if (isDiscordActivity()) this.scheduleAutoplayKick();
@@ -175,17 +178,25 @@ export class HtmlVideoPlayer implements VideoPlayer {
   }
 
   play(startTime?: number): void {
-    this.tryPlay(startTime);
+    if (startTime !== undefined) {
+      const drift = Math.abs(this.video.currentTime - startTime);
+      if (drift > 0.05) this.video.currentTime = startTime;
+    }
+    this.tryPlay();
   }
 
   pause(atTime?: number): void {
     this.wantsPlay = false;
     this.clearAutoplayRetry();
-    if (atTime !== undefined) this.video.currentTime = atTime;
+    if (atTime !== undefined) {
+      const drift = Math.abs(this.video.currentTime - atTime);
+      if (drift > 0.05) this.video.currentTime = atTime;
+    }
     this.video.pause();
   }
 
   seek(time: number): void {
+    if (Math.abs(this.video.currentTime - time) <= 0.05) return;
     this.video.currentTime = time;
   }
 
