@@ -58,8 +58,7 @@ export function getYouTubeEmbedMessageOrigins(pageOrigin = window.location.origi
 
 /** Target origin when posting commands into the YouTube iframe. */
 export function getYouTubeEmbedPostMessageTarget(pageOrigin = window.location.origin): string {
-  // Discord: outer iframe is our player wrapper on the same discordsays.com origin.
-  if (isDiscordActivity()) return pageOrigin;
+  if (isDiscordActivity()) return "https://www.youtube.com";
   return "https://www.youtube-nocookie.com";
 }
 

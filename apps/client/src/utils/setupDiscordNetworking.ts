@@ -17,6 +17,6 @@ export function setupDiscordNetworking(): void {
       { prefix: "/colyseus", target: SERVER_HOST },
       { prefix: "/ytimg", target: "i.ytimg.com" },
     ],
-    { patchSrcAttributes: true }
+    { patchFetch: true, patchWebSocket: true, patchXhr: true, patchSrcAttributes: false }
   );
 }

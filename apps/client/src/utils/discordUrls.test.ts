@@ -24,21 +24,20 @@ describe("discordUrls", () => {
     expect(discordRuntimePath("/colyseus")).toBe("/.proxy/colyseus");
   });
 
-  it("uses server player wrapper URL in Discord", () => {
+  it("uses direct youtube.com embed in Discord", () => {
     vi.stubGlobal("window", {
       location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com", href: "https://12345.discordsays.com/" },
     });
-    vi.stubEnv("VITE_COLYSEUS_URL", "/.proxy/colyseus");
     const url = buildYouTubeEmbedUrl("dQw4w9WgXcQ", 0, true);
-    expect(url).toContain("/.proxy/colyseus/api/youtube/player/dQw4w9WgXcQ");
+    expect(url).toContain("https://www.youtube.com/embed/dQw4w9WgXcQ");
+    expect(url).not.toContain("/api/youtube/player");
     expect(url).not.toContain("youtube-nocookie");
   });
 
-  it("uses direct postMessage target in Discord", () => {
-    const origin = "https://12345.discordsays.com";
+  it("uses youtube.com postMessage target in Discord", () => {
     vi.stubGlobal("window", {
-      location: { hostname: "12345.discordsays.com", search: "", origin },
+      location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
     });
-    expect(getYouTubeEmbedPostMessageTarget(origin)).toBe(origin);
+    expect(getYouTubeEmbedPostMessageTarget()).toBe("https://www.youtube.com");
   });
 });

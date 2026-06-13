@@ -1,4 +1,4 @@
-import { isDiscordActivity, getServerProxyPrefix } from "./discordUrls.js";
+import { isDiscordActivity } from "./discordUrls.js";
 
 /** True when the page is served from a raw IP — YouTube often blocks music/copyright embeds in that case. */
 export function isRawIpHost(
@@ -13,6 +13,26 @@ export function isRawIpHost(
 
 export { isDiscordActivity } from "./discordUrls.js";
 
+function buildEmbedParams(
+  startSec: number,
+  autoplay: boolean,
+  pageOrigin: string,
+  pageHref: string,
+  includeReferrer: boolean
+): URLSearchParams {
+  const params = new URLSearchParams({
+    start: String(Math.max(0, Math.floor(startSec))),
+    rel: "0",
+    modestbranding: "1",
+    playsinline: "1",
+    enablejsapi: "1",
+    origin: pageOrigin,
+  });
+  if (includeReferrer) params.set("widget_referrer", pageHref);
+  if (autoplay) params.set("autoplay", "1");
+  return params;
+}
+
 export function buildYouTubeEmbedUrl(
   videoId: string,
   startSec: number,
@@ -21,34 +41,17 @@ export function buildYouTubeEmbedUrl(
   pageOrigin = typeof window !== "undefined" ? window.location.origin : "",
   pageHref = typeof window !== "undefined" ? window.location.href : ""
 ): string {
-  const start = String(Math.max(0, Math.floor(startSec)));
-  const params = new URLSearchParams({
-    start,
-    origin: pageOrigin,
-  });
-  if (autoplay) params.set("autoplay", "1");
-
-  // Discord: proxied youtube-nocookie returns a broken 58-byte error page (JS can't load).
-  // Use our server player wrapper → inner iframe loads youtube.com directly.
+  // Discord: load youtube.com directly in the activity iframe.
+  // Proxied youtube URLs break (58-byte error); server wrapper inner iframe is CSP-blocked.
   if (isDiscordActivity()) {
-    return `${getServerProxyPrefix()}/api/youtube/player/${encodeURIComponent(videoId)}?${params}`;
+    const params = buildEmbedParams(startSec, autoplay, pageOrigin, pageHref, false);
+    return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?${params}`;
   }
 
   const base =
     embedHost === "youtube"
       ? "https://www.youtube.com"
       : "https://www.youtube-nocookie.com";
-
-  const embedParams = new URLSearchParams({
-    start,
-    rel: "0",
-    modestbranding: "1",
-    playsinline: "1",
-    enablejsapi: "1",
-    origin: pageOrigin,
-    widget_referrer: pageHref,
-  });
-  if (autoplay) embedParams.set("autoplay", "1");
-
-  return `${base}/embed/${encodeURIComponent(videoId)}?${embedParams}`;
+  const params = buildEmbedParams(startSec, autoplay, pageOrigin, pageHref, true);
+  return `${base}/embed/${encodeURIComponent(videoId)}?${params}`;
 }
