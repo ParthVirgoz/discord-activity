@@ -28,10 +28,11 @@ function streamScore(stream: PipedStream): number {
   if (isProgressiveMp4(stream)) score += 100;
   if (/videoplayback|googlevideo|proxy\.piped/i.test(url)) score += 50;
   if (/odycdn|lbry/i.test(url)) score += 10;
-  if (/720p/i.test(quality)) score += 30;
-  if (/480p/i.test(quality)) score += 25;
-  if (/360p|medium/i.test(quality)) score += 20;
-  if (/240p|144p|small/i.test(quality)) score += 5;
+  // Prefer 360p/480p — smaller files seek forward faster over Range requests.
+  if (/360p|medium/i.test(quality)) score += 40;
+  if (/480p/i.test(quality)) score += 32;
+  if (/720p/i.test(quality)) score += 18;
+  if (/240p|144p|small/i.test(quality)) score += 8;
 
   return score;
 }

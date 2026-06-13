@@ -59,8 +59,10 @@ export class WatchApp {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private controlsTimer: ReturnType<typeof setInterval> | null = null;
   private isScrubbing = false;
+  private playerLoading = false;
   private suppressStateBroadcast = 0;
   private ignoreRemotePlaybackUntil = 0;
+  private lastVideoChangeAt = 0;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
@@ -314,6 +316,14 @@ export class WatchApp {
     return this.canControlPlayback() && Date.now() < this.ignoreRemotePlaybackUntil;
   }
 
+  /** Skip duplicate play/pause right after videoChanged already applied the same state. */
+  private shouldSkipRedundantPlaybackApply(currentTime: number, shouldPlay: boolean): boolean {
+    if (!this.player || Date.now() - this.lastVideoChangeAt > 3000) return false;
+    const drift = Math.abs(this.player.getCurrentTime() - currentTime);
+    if (drift > SYNC_APPLY_THRESHOLD) return false;
+    return this.player.isPlaying() === shouldPlay;
+  }
+
   private withSuppressedStateBroadcast(fn: () => void) {
     this.suppressStateBroadcast += 1;
     try {
@@ -381,6 +391,10 @@ export class WatchApp {
       if (!this.canControlPlayback()) return;
       const t = Number(seek.value);
       this.updatePlayerTimeLabels(t, Number(seek.max));
+      this.withSuppressedStateBroadcast(() => {
+        const keepPlaying = this.room.state.isPlaying || this.player!.isPlaying();
+        this.player?.seek(t, keepPlaying);
+      });
     });
     seek?.addEventListener("change", () => {
       if (!this.canControlPlayback()) return;
@@ -617,6 +631,7 @@ export class WatchApp {
   }
 
   private setPlayerLoading(visible: boolean) {
+    this.playerLoading = visible;
     this.root.querySelector("#loading-overlay")?.classList.toggle("hidden", !visible);
   }
 
@@ -966,7 +981,7 @@ export class WatchApp {
   }
 
   private signalVideoEnded() {
-    if (this.videoEndedSent) return;
+    if (this.videoEndedSent || !this.canControlPlayback()) return;
     this.videoEndedSent = true;
     this.room.send("videoEnded", {});
   }
@@ -1012,6 +1027,10 @@ export class WatchApp {
       if (this.lastSync) {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: true };
       }
+      if (this.shouldSkipRedundantPlaybackApply(data.currentTime, true)) {
+        this.updatePlayerControls();
+        return;
+      }
       if (!this.shouldIgnoreRemotePlaybackApply()) {
         this.applyPlay(data.currentTime);
       }
@@ -1021,6 +1040,10 @@ export class WatchApp {
     this.room.onMessage("pause", (data: { currentTime: number }) => {
       if (this.lastSync) {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: false };
+      }
+      if (this.shouldSkipRedundantPlaybackApply(data.currentTime, false)) {
+        this.updatePlayerControls();
+        return;
       }
       if (!this.shouldIgnoreRemotePlaybackApply()) {
         this.applyPause(data.currentTime);
@@ -1044,6 +1067,8 @@ export class WatchApp {
     this.room.onMessage("videoChanged", (sync: SyncPayload) => {
       this.videoEndedSent = false;
       this.unavailableSentForVideoId = "";
+      this.ignoreRemotePlaybackUntil = 0;
+      this.lastVideoChangeAt = Date.now();
       this.clearUnavailableCheck();
       this.lastSync = sync;
       void this.applyVideoChange(sync);
@@ -1465,7 +1490,7 @@ export class WatchApp {
 
     await this.ensurePlayer(sync.videoId, {
       startTime: 0,
-      autoplay: sync.isPlaying,
+      autoplay: false,
     });
 
     if (!this.player || !sync.videoId) return;
@@ -1474,6 +1499,7 @@ export class WatchApp {
 
     if (sync.isPlaying) {
       this.applyPlay(0);
+      if (this.canControlPlayback()) this.markLocalPlaybackAction();
       this.scheduleUnavailableCheck();
     } else {
       this.applyPause(0);
@@ -1536,7 +1562,7 @@ export class WatchApp {
     const videoChanged = sync.videoId !== this.loadedVideoId;
     await this.ensurePlayer(sync.videoId, {
       startTime: sync.currentTime,
-      autoplay: sync.isPlaying && (force || videoChanged),
+      autoplay: false,
     });
     if (!this.player || !sync.videoId) return;
 
@@ -1551,13 +1577,14 @@ export class WatchApp {
     }
 
     if (sync.isPlaying) {
-      if (needsUpdate || playingMismatch) {
+      if (needsUpdate || playingMismatch || videoChanged) {
         this.applyPlay(sync.currentTime);
+        if (videoChanged && this.canControlPlayback()) this.markLocalPlaybackAction();
       }
       if (videoChanged) {
         this.scheduleUnavailableCheck();
       }
-    } else if (needsUpdate || playingMismatch) {
+    } else if (needsUpdate || playingMismatch || videoChanged) {
       this.applyPause(sync.currentTime);
     }
 
@@ -1571,7 +1598,7 @@ export class WatchApp {
       const playing = this.player!.isPlaying();
       if (playing && drift <= SYNC_APPLY_THRESHOLD) return;
       if (drift > SYNC_APPLY_THRESHOLD) {
-        this.player!.seek(currentTime);
+        this.player!.seek(currentTime, true);
       }
       if (!this.player!.isPlaying()) {
         this.player!.play();
@@ -1584,7 +1611,7 @@ export class WatchApp {
     this.withSuppressedStateBroadcast(() => {
       const drift = Math.abs(this.player!.getCurrentTime() - currentTime);
       if (drift > SYNC_APPLY_THRESHOLD) {
-        this.player!.seek(currentTime);
+        this.player!.seek(currentTime, false);
       }
       if (this.player!.isPlaying()) {
         this.player!.pause();
@@ -1594,9 +1621,10 @@ export class WatchApp {
 
   private seekTo(time: number) {
     if (!this.player) return;
+    const keepPlaying = this.room.state.isPlaying || this.player.isPlaying();
     this.withSuppressedStateBroadcast(() => {
       if (Math.abs(this.player!.getCurrentTime() - time) <= 0.05) return;
-      this.player!.seek(time);
+      this.player!.seek(time, keepPlaying);
     });
   }
 
@@ -1642,7 +1670,8 @@ export class WatchApp {
   private startEndDetection() {
     if (this.endCheckTimer) clearInterval(this.endCheckTimer);
     this.endCheckTimer = setInterval(() => {
-      if (!this.player || this.videoEndedSent) return;
+      if (!this.player || this.videoEndedSent || this.playerLoading) return;
+      if (!this.canControlPlayback()) return;
 
       if (this.player.getLastState() === "ended") {
         this.signalVideoEnded();

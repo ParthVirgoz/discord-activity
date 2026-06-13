@@ -591,7 +591,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("videoEnded", (client) => {
-      if (!this.rateLimit(client)) return;
+      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
       this.handleVideoComplete();
     });
 

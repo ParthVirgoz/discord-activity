@@ -22,7 +22,7 @@ export type YtPlayerState =
 export interface VideoPlayer {
   play(startTime?: number): void;
   pause(atTime?: number): void;
-  seek(time: number): void;
+  seek(time: number, keepPlaying?: boolean): void;
   load(videoId: string, startTime?: number, autoplay?: boolean): void;
   getCurrentTime(): number;
   getDuration(): number;
@@ -303,7 +303,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     this.playing = false;
   }
 
-  seek(time: number): void {
+  seek(time: number, _keepPlaying?: boolean): void {
     this.setReportedTime(time);
     this.runSuppressed(() => this.postCommand("seekTo", [time, true]));
     if (this.playing) this.timeAnchorAt = Date.now();

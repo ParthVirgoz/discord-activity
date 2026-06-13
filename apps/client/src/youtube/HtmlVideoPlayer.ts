@@ -15,6 +15,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private lastState: YtPlayerState = "unstarted";
   private wantsPlay = false;
   private autoplayRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private seekResumeCleanup: (() => void) | null = null;
   private onStateChange?: (state: YtPlayerState, currentTime: number) => void;
   private onReady?: () => void;
   private onError?: (errorCode: number) => void;
@@ -40,6 +41,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.video.addEventListener("playing", () => {
       this.lastState = "playing";
       this.clearAutoplayRetry();
+      this.clearSeekResume();
       this.onStateChange?.("playing", this.getCurrentTime());
     });
 
@@ -51,10 +53,15 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
     this.video.addEventListener("ended", () => {
       this.lastState = "ended";
+      this.wantsPlay = false;
       this.onStateChange?.("ended", this.getCurrentTime());
     });
 
     this.video.addEventListener("waiting", () => {
+      this.lastState = "buffering";
+    });
+
+    this.video.addEventListener("seeking", () => {
       this.lastState = "buffering";
     });
 
@@ -119,6 +126,11 @@ export class HtmlVideoPlayer implements VideoPlayer {
     }
   }
 
+  private clearSeekResume(): void {
+    this.seekResumeCleanup?.();
+    this.seekResumeCleanup = null;
+  }
+
   /** Discord often blocks the first autoplay attempt — retry briefly. */
   private scheduleAutoplayKick(attempt = 0): void {
     this.clearAutoplayRetry();
@@ -132,16 +144,71 @@ export class HtmlVideoPlayer implements VideoPlayer {
     }, 400);
   }
 
+  private tryResumePlayback(): void {
+    if (!this.wantsPlay || this.isPlaying()) return;
+    void this.video.play().catch(() => {
+      if (isDiscordActivity()) this.scheduleAutoplayKick();
+    });
+  }
+
+  /** Keep playing through forward seeks — browser pauses while fetching new ranges. */
+  private resumeAfterSeek(): void {
+    this.clearSeekResume();
+    this.tryResumePlayback();
+
+    const onSeeked = () => {
+      this.tryResumePlayback();
+      if (!this.isPlaying() && this.wantsPlay) {
+        this.video.addEventListener("canplay", onCanplay, { once: true });
+      }
+    };
+    const onCanplay = () => {
+      this.tryResumePlayback();
+    };
+
+    this.video.addEventListener("seeked", onSeeked, { once: true });
+    this.video.addEventListener("canplay", onCanplay, { once: true });
+    this.seekResumeCleanup = () => {
+      this.video.removeEventListener("seeked", onSeeked);
+      this.video.removeEventListener("canplay", onCanplay);
+    };
+  }
+
+  private startPlayback(): void {
+    const playNow = () => {
+      void this.video.play().catch(() => {
+        if (isDiscordActivity()) this.scheduleAutoplayKick();
+        else this.onError?.(150);
+      });
+    };
+
+    if (this.video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      playNow();
+    } else {
+      this.video.addEventListener("canplay", playNow, { once: true });
+    }
+  }
+
   private tryPlay(startTime?: number): void {
     if (startTime !== undefined) {
       const drift = Math.abs(this.video.currentTime - startTime);
-      if (drift > 0.05) this.video.currentTime = startTime;
+      if (drift > 0.05) this.setMediaTime(startTime);
     }
     this.wantsPlay = true;
-    void this.video.play().catch(() => {
-      if (isDiscordActivity()) this.scheduleAutoplayKick();
-      else this.onError?.(150);
-    });
+    this.startPlayback();
+  }
+
+  private setMediaTime(time: number): void {
+    const forward = time > this.video.currentTime + 0.5;
+    if (forward && typeof this.video.fastSeek === "function") {
+      try {
+        this.video.fastSeek(time);
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+    this.video.currentTime = time;
   }
 
   waitForReady(): Promise<void> {
@@ -163,9 +230,9 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
     const applyStart = () => {
       if (startTime > 0 && Number.isFinite(this.video.duration)) {
-        this.video.currentTime = Math.min(startTime, this.video.duration);
+        this.setMediaTime(Math.min(startTime, this.video.duration));
       } else if (startTime > 0) {
-        this.video.currentTime = startTime;
+        this.setMediaTime(startTime);
       }
       if (autoplay) this.tryPlay();
     };
@@ -180,7 +247,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
   play(startTime?: number): void {
     if (startTime !== undefined) {
       const drift = Math.abs(this.video.currentTime - startTime);
-      if (drift > 0.05) this.video.currentTime = startTime;
+      if (drift > 0.05) this.setMediaTime(startTime);
     }
     this.tryPlay();
   }
@@ -188,16 +255,24 @@ export class HtmlVideoPlayer implements VideoPlayer {
   pause(atTime?: number): void {
     this.wantsPlay = false;
     this.clearAutoplayRetry();
+    this.clearSeekResume();
     if (atTime !== undefined) {
       const drift = Math.abs(this.video.currentTime - atTime);
-      if (drift > 0.05) this.video.currentTime = atTime;
+      if (drift > 0.05) this.setMediaTime(atTime);
     }
     this.video.pause();
   }
 
-  seek(time: number): void {
+  seek(time: number, keepPlaying?: boolean): void {
     if (Math.abs(this.video.currentTime - time) <= 0.05) return;
-    this.video.currentTime = time;
+
+    const resume = keepPlaying ?? (this.wantsPlay || this.isPlaying());
+    this.wantsPlay = resume;
+    this.setMediaTime(time);
+
+    if (resume) {
+      this.resumeAfterSeek();
+    }
   }
 
   getCurrentTime(): number {
@@ -222,6 +297,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
   destroy(): void {
     this.clearAutoplayRetry();
+    this.clearSeekResume();
     this.clearLoadTimeout();
     this.video.pause();
     this.video.removeAttribute("src");
