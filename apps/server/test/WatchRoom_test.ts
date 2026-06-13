@@ -45,12 +45,15 @@ describe("WatchRoom", () => {
     }
   });
 
-  it("only host can load video", async () => {
+  it("only host can load video when queue editing is restricted", async () => {
     const room = await colyseus.createRoom<WatchRoomState>("my_room", {
       channelId: TEST_CHANNEL,
     });
     const host = await connectAs(colyseus, room, "host");
     const viewer = await connectAs(colyseus, room, "viewer");
+    await room.waitForNextPatch();
+
+    host.send("setPermissions", { allowEveryoneQueue: false });
     await room.waitForNextPatch();
 
     viewer.send("loadVideo", { videoId: "dQw4w9WgXcQ", title: "Test" });

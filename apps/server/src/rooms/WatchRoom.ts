@@ -14,7 +14,7 @@ import {
 } from "../utils/validation";
 
 const DRIFT_THRESHOLD_SEC = 2;
-const MESSAGE_COOLDOWN_MS = 100;
+const MESSAGE_COOLDOWN_MS = 50;
 
 export type QueueItemStatus = "queued" | "playing" | "played" | "unavailable";
 
@@ -43,8 +43,8 @@ export class WatchRoomState extends Schema {
   @type("number") playbackRate = 1;
   @type("number") lastUpdatedAt = 0;
   @type("number") videoDurationSec = 0;
-  @type("boolean") allowEveryoneQueue = false;
-  @type("boolean") allowEveryonePlayback = false;
+  @type("boolean") allowEveryoneQueue = true;
+  @type("boolean") allowEveryonePlayback = true;
   @type("boolean") allowOthersToHost = false;
   @type("boolean") allowReplayPlayed = true;
   @type("boolean") dimPlayedInPlaylist = false;
@@ -399,6 +399,8 @@ export class WatchRoom extends Room {
     }
     this.channelId = options.channelId;
     this.autoDispose = false;
+    this.state.allowEveryoneQueue = true;
+    this.state.allowEveryonePlayback = true;
 
     this.setSimulationInterval(() => {
       this.maybeAdvanceAtEnd();
@@ -407,19 +409,28 @@ export class WatchRoom extends Room {
     this.onMessage("play", (client, msg: { currentTime?: number }) => {
       if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
       this.applyPlay(clampTime(msg?.currentTime));
-      this.broadcast("play", { currentTime: this.state.currentTime });
+      this.broadcast("play", {
+        currentTime: this.state.currentTime,
+        fromSessionId: client.sessionId,
+      });
     });
 
     this.onMessage("pause", (client, msg: { currentTime?: number }) => {
       if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
       this.applyPause(clampTime(msg?.currentTime));
-      this.broadcast("pause", { currentTime: this.state.currentTime });
+      this.broadcast("pause", {
+        currentTime: this.state.currentTime,
+        fromSessionId: client.sessionId,
+      });
     });
 
     this.onMessage("seek", (client, msg: { currentTime?: number }) => {
       if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
       this.applySeek(clampTime(msg?.currentTime));
-      this.broadcast("seek", { currentTime: this.state.currentTime });
+      this.broadcast("seek", {
+        currentTime: this.state.currentTime,
+        fromSessionId: client.sessionId,
+      });
     });
 
     this.onMessage("setRate", (client, msg: { rate?: number; currentTime?: number }) => {

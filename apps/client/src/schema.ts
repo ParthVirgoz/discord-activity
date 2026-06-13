@@ -27,8 +27,8 @@ export class WatchRoomState extends Schema {
   @type("number") playbackRate = 1;
   @type("number") lastUpdatedAt = 0;
   @type("number") videoDurationSec = 0;
-  @type("boolean") allowEveryoneQueue = false;
-  @type("boolean") allowEveryonePlayback = false;
+  @type("boolean") allowEveryoneQueue = true;
+  @type("boolean") allowEveryonePlayback = true;
   @type("boolean") allowOthersToHost = false;
   @type("boolean") allowReplayPlayed = true;
   @type("boolean") dimPlayedInPlaylist = false;
