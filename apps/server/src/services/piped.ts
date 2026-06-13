@@ -58,7 +58,7 @@ interface PipedStreamItem {
   duration?: number;
 }
 
-async function pipedFetch(path: string): Promise<Response | null> {
+export async function pipedFetch(path: string): Promise<Response | null> {
   for (const base of PIPED_INSTANCES) {
     try {
       const res = await fetch(`${base}${path}`, {

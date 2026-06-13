@@ -9,6 +9,7 @@ import {
   getYouTubeEmbedPostMessageTarget,
   isDiscordActivity,
 } from "../utils/discordUrls.js";
+import { HtmlVideoPlayer } from "./HtmlVideoPlayer.js";
 
 export type YtPlayerState =
   | "unstarted"
@@ -344,5 +345,8 @@ export async function createYouTubePlayer(
   const container = document.getElementById(elementId);
   if (!container) throw new Error("Player container not found");
 
+  if (isDiscordActivity()) {
+    return new HtmlVideoPlayer(container, handlers);
+  }
   return new PostMessageVideoPlayer(container, handlers);
 }

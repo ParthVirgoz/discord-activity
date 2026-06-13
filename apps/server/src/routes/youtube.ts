@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { Readable } from "node:stream";
 import { requireAuth, type AuthenticatedRequest } from "../middleware/requireAuth";
 import { checkRateLimit } from "../utils/rateLimit";
 import { isValidVideoId } from "../utils/validation";
@@ -8,24 +9,9 @@ import {
   sanitizeSearchQuery,
   parsePlaylistId,
 } from "../services/youtube";
-import { buildYouTubePlayerPage, parsePlayerQuery } from "../services/youtubePlayerPage";
+import { resolvePipedPlayback } from "../services/pipedStreams";
 
 const router = Router();
-
-/** HTML wrapper that embeds YouTube directly (proxied youtube.com breaks inside Discord). */
-router.get("/player/:videoId", (req, res) => {
-  const videoId = req.params.videoId;
-  if (!isValidVideoId(videoId)) {
-    res.status(400).end();
-    return;
-  }
-
-  const { startSec, autoplay, origin } = parsePlayerQuery(req.query as Record<string, unknown>);
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.removeHeader("X-Frame-Options");
-  res.send(buildYouTubePlayerPage(videoId, { startSec, autoplay, origin }));
-});
 
 router.get("/thumbnail/:videoId", async (req, res) => {
   const videoId = req.params.videoId;
@@ -50,6 +36,59 @@ router.get("/thumbnail/:videoId", async (req, res) => {
     res.send(Buffer.from(await upstream.arrayBuffer()));
   } catch {
     res.status(502).end();
+  }
+});
+
+/** Proxied video stream for Discord (iframe YouTube is CSP-blocked). Supports Range for seeking. */
+router.get("/media/:videoId", async (req, res) => {
+  const videoId = req.params.videoId;
+  if (!isValidVideoId(videoId)) {
+    res.status(400).end();
+    return;
+  }
+
+  const playback = await resolvePipedPlayback(videoId);
+  if (!playback) {
+    res.status(502).json({ error: "Video stream unavailable" });
+    return;
+  }
+
+  try {
+    const headers: Record<string, string> = {};
+    const range = req.headers.range;
+    if (typeof range === "string") headers.Range = range;
+
+    const upstream = await fetch(playback.streamUrl, {
+      headers,
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!upstream.ok && upstream.status !== 206) {
+      res.status(upstream.status).end();
+      return;
+    }
+
+    res.status(upstream.status);
+    const contentType = upstream.headers.get("content-type");
+    if (contentType) res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    res.removeHeader("X-Frame-Options");
+
+    for (const h of ["content-range", "content-length"] as const) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+
+    if (!upstream.body) {
+      res.status(502).end();
+      return;
+    }
+
+    Readable.fromWeb(upstream.body as import("stream/web").ReadableStream).pipe(res);
+  } catch {
+    if (!res.headersSent) res.status(502).end();
   }
 });
 

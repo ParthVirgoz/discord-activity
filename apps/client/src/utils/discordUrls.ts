@@ -32,7 +32,7 @@ export function getServerProxyPrefix(): string {
 
 /**
  * YouTube embed base for iframe src (non-Discord only).
- * In Discord, buildYouTubeEmbedUrl uses the server player wrapper instead.
+ * In Discord, createYouTubePlayer uses HtmlVideoPlayer with a proxied stream instead.
  */
 export function getYouTubeEmbedBase(): string {
   return "https://www.youtube-nocookie.com";
@@ -45,6 +45,11 @@ export function getYouTubeThumbnailUrl(videoId: string): string {
     return `${getServerProxyPrefix()}/api/youtube/thumbnail/${id}`;
   }
   return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+}
+
+/** HTML5 video stream URL (Discord — avoids blocked YouTube iframes). */
+export function getYouTubeMediaUrl(videoId: string): string {
+  return `${getServerProxyPrefix()}/api/youtube/media/${encodeURIComponent(videoId)}`;
 }
 
 /** Origins accepted for YouTube iframe postMessage (includes Discord proxy). */

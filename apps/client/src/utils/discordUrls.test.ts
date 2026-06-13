@@ -3,6 +3,7 @@ import {
   isDiscordActivity,
   discordRuntimePath,
   getYouTubeEmbedPostMessageTarget,
+  getYouTubeMediaUrl,
 } from "./discordUrls.js";
 import { buildYouTubeEmbedUrl } from "./youtubeEmbed.js";
 
@@ -39,5 +40,15 @@ describe("discordUrls", () => {
       location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
     });
     expect(getYouTubeEmbedPostMessageTarget()).toBe("https://www.youtube.com");
+  });
+
+  it("uses proxied media stream in Discord", () => {
+    vi.stubGlobal("window", {
+      location: { hostname: "12345.discordsays.com", search: "", origin: "https://12345.discordsays.com" },
+    });
+    vi.stubEnv("VITE_COLYSEUS_URL", "/.proxy/colyseus");
+    expect(getYouTubeMediaUrl("dQw4w9WgXcQ")).toBe(
+      "/.proxy/colyseus/api/youtube/media/dQw4w9WgXcQ"
+    );
   });
 });
