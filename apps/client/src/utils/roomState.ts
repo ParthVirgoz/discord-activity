@@ -58,13 +58,20 @@ export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 8000):
 }
 
 /**
- * After schema exists, wait for a decoded state patch so members/queue
- * are populated before client bootstrap (critical for reconnect).
+ * After schema exists, wait for decoded queue/member data before bootstrap.
+ * Uses setTimeout(0) instead of rAF so hidden Discord tabs don't stall.
  */
 function waitForStatePatch(room: Room<WatchRoomState>, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
-    let patchSeen = false;
+    let patchCount = 0;
+    const hasVideo = () => !!room.state?.videoId;
+    const queueReady = () => {
+      const queueLen = room.state?.queue?.length ?? 0;
+      if (queueLen > 0) return true;
+      // Empty room or cleared queue — one patch is enough.
+      return patchCount >= 1 && !hasVideo();
+    };
 
     const finish = () => {
       if (settled) return;
@@ -75,19 +82,20 @@ function waitForStatePatch(room: Room<WatchRoomState>, timeoutMs: number): Promi
     };
 
     const onChange = () => {
-      patchSeen = true;
-      requestAnimationFrame(finish);
+      patchCount += 1;
+      if (stateHasDecodedData(room) && (queueReady() || patchCount >= 2)) {
+        setTimeout(finish, 0);
+      }
     };
 
     const timer = setTimeout(finish, timeoutMs);
     room.onStateChange(onChange);
 
-    // Schema may mount before the first patch — only short-circuit when data is present.
-    requestAnimationFrame(() => {
-      if (!patchSeen && stateHasDecodedData(room)) {
+    setTimeout(() => {
+      if (!settled && stateHasDecodedData(room)) {
         onChange();
       }
-    });
+    }, 0);
   });
 }
 

@@ -6,7 +6,17 @@ import { attachWatchRoomMessageBuffer } from "./watchRoomMessageBuffer.js";
 /** Must match production Railway registration in app.config.ts */
 export const WATCH_ROOM_NAME = "my_room";
 
-const roomIdStorageKey = (channelId: string) => `synctube:roomId:${channelId}`;
+/** frame_id changes per Discord Activity launch — avoid stale joinById across relaunches. */
+function activityInstanceKey(): string {
+  try {
+    return new URLSearchParams(window.location.search).get("frame_id") ?? "local";
+  } catch {
+    return "local";
+  }
+}
+
+const roomIdStorageKey = (channelId: string) =>
+  `synctube:roomId:${channelId}:${activityInstanceKey()}`;
 
 export function persistWatchRoomId(channelId: string, roomId: string): void {
   try {

@@ -108,6 +108,8 @@ export class WatchRoom extends Room {
   private lastMessageAt = new Map<string, number>();
   private lastVideoEndedAt = 0;
   private lastUnavailableVideoId = "";
+  /** Session join order — used for host promotion (earliest joiner wins). */
+  private joinedAt = new Map<string, number>();
 
   static onAuth(token: string) {
     return JWT.verify(token);
@@ -375,12 +377,25 @@ export class WatchRoom extends Room {
   }
 
   private promoteNextHost(): void {
-    const members = [...this.state.members.keys()].sort();
-    const nextHost = members.find((sid) => sid !== this.state.hostSessionId);
-    this.state.hostSessionId = nextHost ?? "";
+    const candidates = [...this.state.members.keys()].filter(
+      (sid) => sid !== this.state.hostSessionId
+    );
+    candidates.sort(
+      (a, b) => (this.joinedAt.get(a) ?? 0) - (this.joinedAt.get(b) ?? 0)
+    );
+    this.state.hostSessionId = candidates[0] ?? "";
+  }
+
+  /** Notify clients of a new host and push authoritative playback state. */
+  private broadcastHostTransfer(): void {
+    this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+    if (this.state.hostSessionId && this.state.videoId) {
+      this.broadcast("forceSync", this.buildSyncMessage());
+    }
   }
 
   private advanceQueue(autoPlay = true): boolean {
+    this.lastVideoEndedAt = Date.now();
     const playingIdx = this.findPlayingIndex();
     this.markPlayingAsPlayed();
 
@@ -395,7 +410,7 @@ export class WatchRoom extends Room {
     if (!this.state.videoId) return;
 
     const now = Date.now();
-    if (now - this.lastVideoEndedAt < 2500) return;
+    if (now - this.lastVideoEndedAt < 5000) return;
     this.lastVideoEndedAt = now;
 
     if (!this.advanceQueue(true)) {
@@ -605,8 +620,17 @@ export class WatchRoom extends Room {
     this.onMessage("moveQueueItem", (client, msg: { fromIndex?: number; toIndex?: number }) => {
       if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
       const from = clampQueueIndex(msg?.fromIndex, this.state.queue.length);
-      const to = clampQueueIndex(msg?.toIndex, this.state.queue.length);
-      if (from === null || to === null || from === to) return;
+      const toRaw = msg?.toIndex;
+      if (
+        from === null ||
+        typeof toRaw !== "number" ||
+        toRaw < 0 ||
+        toRaw > this.state.queue.length
+      ) {
+        return;
+      }
+      const to = toRaw;
+      if (from === to) return;
       const fromStatus = this.state.queue[from].status;
       if (fromStatus !== "queued" && fromStatus !== "played") return;
       if (this.state.queue[to].status === "playing") return;
@@ -614,7 +638,7 @@ export class WatchRoom extends Room {
       const items = [...this.state.queue];
       const [moved] = items.splice(from, 1);
       if (!moved) return;
-      const insertAt = from < to ? to - 1 : to;
+      const insertAt = from < to ? Math.min(to - 1, items.length) : Math.min(to, items.length);
       items.splice(insertAt, 0, moved);
 
       this.state.queue.clear();
@@ -673,7 +697,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("videoEnded", (client) => {
-      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.isHost(client)) return;
       this.handleVideoComplete();
     });
 
@@ -691,12 +715,12 @@ export class WatchRoom extends Room {
       if (durationSec <= 0) return;
 
       const current = this.state.videoDurationSec;
-      if (current <= 0 || durationSec > current) {
+      if (current <= 0 || durationSec !== current) {
         this.state.videoDurationSec = durationSec;
       }
 
       const playing = this.state.queue.find((item) => item.status === "playing");
-      if (playing && (playing.durationSec <= 0 || durationSec > playing.durationSec)) {
+      if (playing && playing.videoId === this.state.videoId && playing.durationSec !== durationSec) {
         playing.durationSec = durationSec;
       }
     });
@@ -741,14 +765,14 @@ export class WatchRoom extends Room {
       if (!this.rateLimit(client, "admin") || !this.isHost(client)) return;
       if (typeof msg?.sessionId !== "string" || !this.state.members.has(msg.sessionId)) return;
       this.state.hostSessionId = msg.sessionId;
-      this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+      this.broadcastHostTransfer();
     });
 
     this.onMessage("claimHost", (client) => {
       if (!this.rateLimit(client, "sync") || this.isHost(client)) return;
       if (!this.state.allowOthersToHost) return;
       this.state.hostSessionId = client.sessionId;
-      this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+      this.broadcastHostTransfer();
     });
 
     this.onMessage("syncReport", (client, msg: { currentTime?: number }) => {
@@ -796,6 +820,7 @@ export class WatchRoom extends Room {
       this.state.members.delete(sid);
     }
     this.state.members.set(client.sessionId, member);
+    this.joinedAt.set(client.sessionId, Date.now());
 
     if (!this.state.hostSessionId || !this.state.members.has(this.state.hostSessionId)) {
       this.state.hostSessionId = client.sessionId;
@@ -811,10 +836,11 @@ export class WatchRoom extends Room {
 
   private removeMember(sessionId: string, promoteIfStillHost: boolean) {
     this.state.members.delete(sessionId);
+    this.joinedAt.delete(sessionId);
 
     if (promoteIfStillHost && this.state.hostSessionId === sessionId) {
       this.promoteNextHost();
-      this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+      this.broadcastHostTransfer();
     }
 
     if (this.state.members.size === 0) {
@@ -845,7 +871,7 @@ export class WatchRoom extends Room {
     ) {
       this.promoteNextHost();
       if (this.state.hostSessionId) {
-        this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+        this.broadcastHostTransfer();
       }
     }
   }
@@ -878,14 +904,18 @@ export class WatchRoom extends Room {
       return;
     }
 
-    // Watch Together: hand host to someone else immediately so playback continues.
+    // Hand host to another member so playback can continue; restore if host reconnects.
     if (wasHost) {
       this.promoteNextHost();
-      this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+      this.broadcastHostTransfer();
     }
 
     try {
       await this.allowReconnection(client, 180);
+      if (wasHost) {
+        this.state.hostSessionId = sessionId;
+        this.broadcastHostTransfer();
+      }
       client.send("reconnected", {
         sessionId: client.sessionId,
         isHost: this.isHost(client),

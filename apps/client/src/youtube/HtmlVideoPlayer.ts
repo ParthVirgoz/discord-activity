@@ -79,6 +79,16 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
     this.video.addEventListener("waiting", () => {
       this.lastState = "buffering";
+      this.onStateChange?.("buffering", this.getCurrentTime());
+      if (this.wantsPlay) {
+        window.setTimeout(() => this.tryResumePlayback(), 250);
+      }
+    });
+
+    this.video.addEventListener("stalled", () => {
+      if (this.wantsPlay) {
+        window.setTimeout(() => this.tryResumePlayback(), 500);
+      }
     });
 
     this.video.addEventListener("seeking", () => {

@@ -25,14 +25,9 @@ export function startRoomKeepAlive(
   onSync?: () => void,
   intervalMs = 12_000
 ): () => void {
-  let syncCounter = 0;
   const timer = setInterval(() => {
     if (!room.connection?.isOpen) return;
-    room.ping(() => {});
-    syncCounter += 1;
-    if (onSync && syncCounter % 3 === 0) {
-      onSync();
-    }
+    onSync?.();
   }, intervalMs);
   return () => clearInterval(timer);
 }

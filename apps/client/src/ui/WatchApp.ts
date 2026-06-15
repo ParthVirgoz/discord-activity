@@ -120,7 +120,13 @@ export class WatchApp {
   private suppressPlaybackToasts = false;
   private autoplayUnlockMode: "muted" | "blocked" | null = null;
   private autoplayCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  private hostStallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private ensurePlayerTask: Promise<void> | null = null;
+  private destroyed = false;
+  private manualRejoinAbort = false;
+  private rejoinLeaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private documentClickHandler: ((e: Event) => void) | null = null;
+  private applyingPlaybackClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
     this.room = room;
@@ -319,14 +325,13 @@ export class WatchApp {
       this.room.send("setPermissions", { continueFromPosition: (e.target as HTMLInputElement).checked });
     });
 
-    document.addEventListener("click", () => {
+    this.documentClickHandler = () => {
+      if (this.destroyed) return;
       this.closeDropdown();
       this.closeQueueMenu();
-    });
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") return;
-      this.recoverFromDisconnect();
-    });
+    };
+    document.addEventListener("click", this.documentClickHandler);
+    // Visibility recovery is handled by bindNetworkRecoveryHandlers in bindConnectionHandlers.
 
     this.bindKeyboardControls();
     this.bindPlayerControls();
@@ -380,6 +385,7 @@ export class WatchApp {
       this.markLocalPlaybackAction();
       this.seekTo(t);
       this.room.send("seek", { currentTime: t });
+      if (this.lastSync) this.lastSync = { ...this.lastSync, currentTime: t };
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       e.stopPropagation();
@@ -391,6 +397,7 @@ export class WatchApp {
       this.markLocalPlaybackAction();
       this.seekTo(t);
       this.room.send("seek", { currentTime: t });
+      if (this.lastSync) this.lastSync = { ...this.lastSync, currentTime: t };
     }
   }
 
@@ -911,6 +918,9 @@ export class WatchApp {
 
   /** Sync UI + playback from authoritative room state (join, reconnect, rejoin). */
   private bootstrapSession(force = false): Promise<void> {
+    if (this.sessionBootstrapInProgress && !force) {
+      return this.bootstrapPromise ?? Promise.resolve();
+    }
     if (!force && this.bootstrapPromise) return this.bootstrapPromise;
     if (force) this.bootstrapPromise = null;
     this.bootstrapPromise = this.runBootstrapSession();
@@ -920,6 +930,7 @@ export class WatchApp {
   }
 
   private async runBootstrapSession() {
+    if (this.sessionBootstrapInProgress) return;
     this.sessionBootstrapInProgress = true;
     try {
       const isHost = this.room.state.hostSessionId === this.room.sessionId;
@@ -932,6 +943,7 @@ export class WatchApp {
       if (!this.controlsTimer) this.startControlsTimer();
 
       await this.applySync(this.lastSync, true);
+      this.lastSync = this.buildSyncFromRoom();
       this.pendingForceSync = true;
       safeRoomSend(this.room, "syncRequest");
       this.sessionReady = true;
@@ -993,7 +1005,9 @@ export class WatchApp {
     this.applyQueueFromSync(data.sync);
     this.lastSync = data.sync;
     this.refreshUI();
-    void this.applySync(data.sync, true);
+    void this.applySync(data.sync, true).then(() => {
+      this.lastSync = this.buildSyncFromRoom();
+    });
     if (!this.syncTimer) this.startSyncTimer();
     if (!this.endCheckTimer) this.startEndDetection();
     if (!this.controlsTimer) this.startControlsTimer();
@@ -1047,17 +1061,27 @@ export class WatchApp {
     });
 
     this.room.onReconnect(() => {
+      this.manualRejoinAbort = true;
+      if (this.rejoinLeaveTimer) {
+        clearTimeout(this.rejoinLeaveTimer);
+        this.rejoinLeaveTimer = null;
+      }
       this.reconnectInFlight = false;
       this.setConnectionStatus("connected");
       void this.recoverFromDisconnect();
     });
 
     this.room.onLeave((code) => {
+      if (this.destroyed) return;
       if (this.reconnectInFlight) return;
       if (this.room.reconnection.isReconnecting) return;
-      setTimeout(() => {
+      if (this.rejoinLeaveTimer) clearTimeout(this.rejoinLeaveTimer);
+      this.rejoinLeaveTimer = setTimeout(() => {
+        this.rejoinLeaveTimer = null;
+        if (this.destroyed || this.manualRejoinAbort) return;
         if (this.reconnectInFlight) return;
         if (this.room.reconnection.isReconnecting) return;
+        if (this.room.connection?.isOpen) return;
         void this.attemptRoomRejoin(code);
       }, 1200);
     });
@@ -1086,6 +1110,17 @@ export class WatchApp {
       this.setConnectionStatus("connected");
       await waitForWatchState(this.room, 6000);
       if (this.lastSessionSyncAt > syncAtStart) return;
+
+      // Already in a session — resync playback only (avoid reloading on tab focus).
+      if (this.sessionReady && this.room.state.videoId) {
+        const sync = this.buildSyncFromRoom();
+        this.lastSync = sync;
+        await this.applySync(sync, true);
+        this.requestRoomSync();
+        this.scheduleAutoplayCheck();
+        return;
+      }
+
       await this.bootstrapSession(true);
       this.scheduleAutoplayCheck();
     } finally {
@@ -1093,8 +1128,51 @@ export class WatchApp {
     }
   }
 
+  /** Room is still playing but the player stalled — resume locally and resync server clock. */
+  private scheduleHostStallRecovery() {
+    if (!this.isHost || !this.room.state.isPlaying) return;
+    if (this.hostStallRecoveryTimer) return;
+
+    this.hostStallRecoveryTimer = setTimeout(() => {
+      this.hostStallRecoveryTimer = null;
+      if (!this.player || !this.room.state.isPlaying || this.player.isPlaying()) return;
+      if (this.roomSyncInProgress || this.playerLoading || this.applyingRemotePlayback) return;
+
+      const roomTime = this.getRoomEffectiveTime();
+      const localTime = this.player.getCurrentTime();
+      const resumeTime = Math.abs(localTime - roomTime) > 2 ? roomTime : localTime;
+
+      this.withSuppressedStateBroadcast(() => {
+        this.player!.play(resumeTime);
+      });
+      safeRoomSend(this.room, "play", { currentTime: resumeTime });
+    }, 180);
+  }
+
+  /** New host picks up authoritative playback (Watch Together style). */
+  private async adoptHostPlayback() {
+    if (!this.isHost || !this.room.state.videoId) return;
+
+    this.setRoomSyncGrace(BOOTSTRAP_HOST_GRACE_MS);
+    const sync = this.buildSyncFromRoom();
+    this.lastSync = sync;
+    await this.applySync(sync, true);
+
+    if (!this.endCheckTimer) this.startEndDetection();
+    if (sync.isPlaying) {
+      this.scheduleAutoplayCheck();
+      if (this.player && !this.player.isPlaying()) {
+        this.scheduleHostStallRecovery();
+      }
+    }
+  }
+
   private async attemptRoomRejoin(code: number) {
+    if (this.destroyed) return;
     if (this.reconnectInFlight) return;
+    if (this.manualRejoinAbort) return;
+    if (this.room.connection?.isOpen) return;
+
     this.reconnectInFlight = true;
     this.setConnectionStatus("connecting");
 
@@ -1107,13 +1185,35 @@ export class WatchApp {
     }
 
     for (let attempt = 0; attempt < 6; attempt++) {
+      if (this.destroyed || this.manualRejoinAbort) {
+        this.reconnectInFlight = false;
+        return;
+      }
+      if (this.room.connection?.isOpen) {
+        this.reconnectInFlight = false;
+        return;
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+
+      if (this.destroyed || this.manualRejoinAbort) {
+        this.reconnectInFlight = false;
+        return;
+      }
+      if (this.room.connection?.isOpen) {
+        this.reconnectInFlight = false;
+        return;
+      }
 
       try {
         const newRoom = await joinWatchRoom(channelId);
+        if (this.destroyed || this.manualRejoinAbort || this.room.connection?.isOpen) {
+          this.reconnectInFlight = false;
+          return;
+        }
         configureRoomResilience(newRoom);
         await waitForWatchState(newRoom);
-        await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+        await new Promise((r) => setTimeout(r, 0));
         persistWatchRoomId(channelId, newRoom.roomId);
         this.destroy();
         new WatchApp(newRoom, this.root);
@@ -1369,6 +1469,9 @@ export class WatchApp {
       allowEveryoneQueue: s.allowEveryoneQueue,
       allowEveryonePlayback: s.allowEveryonePlayback,
       allowOthersToHost: s.allowOthersToHost,
+      allowReplayPlayed: s.allowReplayPlayed,
+      dimPlayedInPlaylist: s.dimPlayedInPlaylist,
+      continueFromPosition: s.continueFromPosition,
     };
   }
 
@@ -1490,6 +1593,12 @@ export class WatchApp {
       return;
     }
 
+    if (state === "paused" && this.room.state.isPlaying) {
+      // Transient buffer stall — don't pause the room for everyone.
+      if (this.isHost) this.scheduleHostStallRecovery();
+      return;
+    }
+
     if (!this.shouldBroadcastPlayerState()) return;
 
     if (state === "playing") {
@@ -1541,11 +1650,20 @@ export class WatchApp {
     });
 
     this.room.onMessage("reconnected", (data: { isHost: boolean; sync: SyncPayload }) => {
+      const wasHost = this.isHost;
       this.handleSessionSync(data);
+      if (data.isHost && !wasHost) {
+        void this.adoptHostPlayback();
+      } else if (data.isHost && wasHost) {
+        void this.adoptHostPlayback();
+      } else if (!data.isHost && wasHost) {
+        this.clearUnavailableCheck();
+      }
     });
 
     this.room.onMessage("queueEmpty", () => {
       this.queueSnapshot = null;
+      this.suppressPlaybackToasts = false;
       this.renderQueue();
       this.renderVideoTitle();
       this.updatePlayerControls();
@@ -1561,6 +1679,10 @@ export class WatchApp {
       this.videoEndedSent = false;
       if (this.lastSync) {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: true };
+      }
+      if (this.isHost && !this.room.state.allowEveryonePlayback) {
+        this.updatePlayerControls();
+        return;
       }
       if (this.isOwnPlaybackMessage(data.fromSessionId)) {
         this.updatePlayerControls();
@@ -1580,6 +1702,10 @@ export class WatchApp {
     this.room.onMessage("pause", (data: { currentTime: number; fromSessionId?: string }) => {
       if (this.lastSync) {
         this.lastSync = { ...this.lastSync, currentTime: data.currentTime, isPlaying: false };
+      }
+      if (this.isHost && !this.room.state.allowEveryonePlayback) {
+        this.updatePlayerControls();
+        return;
       }
       if (this.isOwnPlaybackMessage(data.fromSessionId)) {
         this.updatePlayerControls();
@@ -1651,7 +1777,9 @@ export class WatchApp {
       const newHost = this.room.state.members?.get(data.hostSessionId);
       if (isHost) {
         this.showStatus("You are now the host", "success");
+        if (!wasHost) void this.adoptHostPlayback();
       } else if (wasHost && newHost) {
+        this.clearUnavailableCheck();
         this.showStatus(`Host transferred to ${newHost.username}`, "info");
       }
       this.renderMembers();
@@ -1887,7 +2015,11 @@ export class WatchApp {
         toIndex = index + 1;
       }
 
-      if (toIndex >= queueLen) toIndex = queueLen - 1;
+      if (after && index === queueLen - 1) {
+        toIndex = queueLen;
+      } else if (toIndex >= queueLen) {
+        toIndex = queueLen - 1;
+      }
 
       const targetItem = this.room.state.queue?.[toIndex];
       if (targetItem?.status === "playing") {
@@ -2234,10 +2366,23 @@ export class WatchApp {
 
       this.renderVideoTitle();
       this.renderQueue();
+      if (force) {
+        this.lastSync = this.buildSyncFromRoom();
+      }
     } finally {
       this.roomSyncInProgress = false;
       this.setRoomSyncGrace();
     }
+  }
+
+  private clearApplyingRemotePlaybackLater() {
+    if (this.applyingPlaybackClearTimer) {
+      clearTimeout(this.applyingPlaybackClearTimer);
+    }
+    this.applyingPlaybackClearTimer = setTimeout(() => {
+      this.applyingPlaybackClearTimer = null;
+      this.applyingRemotePlayback = false;
+    }, STATE_BROADCAST_SUPPRESS_MS);
   }
 
   private applyPlay(currentTime: number) {
@@ -2254,9 +2399,7 @@ export class WatchApp {
         this.player!.play();
       }
     });
-    setTimeout(() => {
-      this.applyingRemotePlayback = false;
-    }, STATE_BROADCAST_SUPPRESS_MS);
+    this.clearApplyingRemotePlaybackLater();
     if (this.room.state.isPlaying) {
       this.scheduleAutoplayCheck();
     }
@@ -2275,9 +2418,7 @@ export class WatchApp {
         this.player!.pause();
       }
     });
-    setTimeout(() => {
-      this.applyingRemotePlayback = false;
-    }, STATE_BROADCAST_SUPPRESS_MS);
+    this.clearApplyingRemotePlaybackLater();
   }
 
   private seekTo(time: number, keepPlaying?: boolean) {
@@ -2288,9 +2429,7 @@ export class WatchApp {
       if (Math.abs(this.player!.getCurrentTime() - time) <= 0.05) return;
       this.player!.seek(time, resume);
     });
-    setTimeout(() => {
-      this.applyingRemotePlayback = false;
-    }, STATE_BROADCAST_SUPPRESS_MS);
+    this.clearApplyingRemotePlaybackLater();
   }
 
   private startSyncTimer() {
@@ -2298,14 +2437,22 @@ export class WatchApp {
     this.syncTimer = setInterval(() => {
       if (!this.player || !this.lastSync || !this.room.state.videoId) return;
       if (this.roomSyncInProgress || this.playerLoading) return;
-      if (this.isHost) return;
+
+      const roomPlaying = this.room.state.isPlaying;
+      const playingMismatch = this.player.isPlaying() !== roomPlaying;
+
+      if (this.isHost) {
+        if (roomPlaying && !this.player.isPlaying()) {
+          this.scheduleHostStallRecovery();
+        }
+        return;
+      }
+
       if (this.shouldIgnoreRemotePlaybackApply()) return;
 
       const roomTime = this.getRoomEffectiveTime();
       const localTime = this.player.getCurrentTime();
       const drift = Math.abs(localTime - roomTime);
-      const roomPlaying = this.room.state.isPlaying;
-      const playingMismatch = this.player.isPlaying() !== roomPlaying;
 
       if (this.shouldSkipSchemaDriftSync() && drift <= SYNC_APPLY_THRESHOLD && !playingMismatch) {
         return;
@@ -2363,8 +2510,27 @@ export class WatchApp {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.manualRejoinAbort = true;
+    if (this.rejoinLeaveTimer) {
+      clearTimeout(this.rejoinLeaveTimer);
+      this.rejoinLeaveTimer = null;
+    }
     if (this.keyboardHandler) {
       document.removeEventListener("keydown", this.keyboardHandler, true);
+      this.keyboardHandler = null;
+    }
+    if (this.documentClickHandler) {
+      document.removeEventListener("click", this.documentClickHandler);
+      this.documentClickHandler = null;
+    }
+    if (this.hostStallRecoveryTimer) {
+      clearTimeout(this.hostStallRecoveryTimer);
+      this.hostStallRecoveryTimer = null;
+    }
+    if (this.applyingPlaybackClearTimer) {
+      clearTimeout(this.applyingPlaybackClearTimer);
+      this.applyingPlaybackClearTimer = null;
     }
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
