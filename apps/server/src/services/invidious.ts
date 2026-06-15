@@ -44,7 +44,7 @@ function cacheSet<T>(key: string, value: T): void {
   cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
 }
 
-async function invidiousFetch(path: string): Promise<Response | null> {
+export async function invidiousFetch(path: string): Promise<Response | null> {
   for (const base of INVIDIOUS_INSTANCES) {
     try {
       const res = await fetch(`${base}${path}`, {

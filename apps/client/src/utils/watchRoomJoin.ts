@@ -1,6 +1,7 @@
 import type { Room } from "@colyseus/sdk";
 import type { WatchRoomState } from "../schema.js";
 import { colyseusSDK } from "./Colyseus.js";
+import { attachWatchRoomMessageBuffer } from "./watchRoomMessageBuffer.js";
 
 /** Must match production Railway registration in app.config.ts */
 export const WATCH_ROOM_NAME = "my_room";
@@ -46,12 +47,11 @@ export async function joinWatchRoom(channelId: string): Promise<Room<WatchRoomSt
   if (savedRoomId) {
     try {
       const room = await colyseusSDK.joinById<WatchRoomState>(savedRoomId, joinOptions);
+      attachWatchRoomMessageBuffer(room);
       persistWatchRoomId(channelId, room.roomId);
-      console.info("[synctube] rejoined room by id", {
-        roomId: room.roomId,
-        channelId,
-        queueLength: room.state?.queue?.length ?? 0,
-      });
+      console.info(
+        `[synctube] rejoined room by id roomId=${room.roomId} channelId=${channelId} queueLength=${room.state?.queue?.length ?? 0}`
+      );
       return room;
     } catch (err) {
       console.warn("[synctube] joinById failed, falling back to joinOrCreate:", err);
@@ -60,11 +60,10 @@ export async function joinWatchRoom(channelId: string): Promise<Room<WatchRoomSt
   }
 
   const room = await colyseusSDK.joinOrCreate<WatchRoomState>(WATCH_ROOM_NAME, joinOptions);
+  attachWatchRoomMessageBuffer(room);
   persistWatchRoomId(channelId, room.roomId);
-  console.info("[synctube] joined room", {
-    roomId: room.roomId,
-    channelId,
-    queueLength: room.state?.queue?.length ?? 0,
-  });
+  console.info(
+    `[synctube] joined room roomId=${room.roomId} channelId=${channelId} queueLength=${room.state?.queue?.length ?? 0}`
+  );
   return room;
 }

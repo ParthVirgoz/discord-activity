@@ -770,6 +770,11 @@ export class WatchRoom extends Room {
       throw new Error("Invalid channelId");
     }
 
+    this.pruneDisconnectedMembers();
+    if (this.state.members.size === 0 && this.hasWatchContent()) {
+      this.resetWatchState();
+    }
+
     const auth = client.auth as { id?: string; username?: string; avatar?: string } | undefined;
     const discordId = typeof auth?.id === "string" ? auth.id : client.sessionId;
     const username = sanitizeUsername(auth?.username);
@@ -813,8 +818,54 @@ export class WatchRoom extends Room {
     }
 
     if (this.state.members.size === 0) {
+      this.resetWatchState();
       this.disconnect();
     }
+  }
+
+  /** Drop disconnected sessions so a new group can start with a clean playlist. */
+  private pruneDisconnectedMembers(): void {
+    const connected = new Set<string>();
+    for (const client of this.clients) {
+      connected.add(client.sessionId);
+    }
+
+    let changed = false;
+    for (const sessionId of [...this.state.members.keys()]) {
+      if (!connected.has(sessionId)) {
+        this.state.members.delete(sessionId);
+        changed = true;
+      }
+    }
+
+    if (
+      changed &&
+      this.state.hostSessionId &&
+      !this.state.members.has(this.state.hostSessionId)
+    ) {
+      this.promoteNextHost();
+      if (this.state.hostSessionId) {
+        this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
+      }
+    }
+  }
+
+  private hasWatchContent(): boolean {
+    return this.state.queue.length > 0 || !!this.state.videoId;
+  }
+
+  private resetWatchState(): void {
+    this.state.queue.clear();
+    this.state.videoId = "";
+    this.state.videoTitle = "";
+    this.state.videoDurationSec = 0;
+    this.state.currentTime = 0;
+    this.state.isPlaying = false;
+    this.state.playbackRate = 1;
+    this.state.lastUpdatedAt = Date.now();
+    this.state.hostSessionId = "";
+    this.lastUnavailableVideoId = "";
+    this.lastVideoEndedAt = 0;
   }
 
   async onLeave(client: Client, code: number) {

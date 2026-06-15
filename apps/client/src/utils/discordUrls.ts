@@ -48,8 +48,10 @@ export function getYouTubeThumbnailUrl(videoId: string): string {
 }
 
 /** HTML5 video stream URL (Discord — avoids blocked YouTube iframes). */
-export function getYouTubeMediaUrl(videoId: string): string {
-  return `${getServerProxyPrefix()}/api/youtube/media/${encodeURIComponent(videoId)}`;
+export function getYouTubeMediaUrl(videoId: string, cacheBust?: number): string {
+  const base = `${getServerProxyPrefix()}/api/youtube/media/${encodeURIComponent(videoId)}`;
+  if (cacheBust == null) return base;
+  return `${base}?refresh=1&_=${cacheBust}`;
 }
 
 /** Origins accepted for YouTube iframe postMessage (includes Discord proxy). */

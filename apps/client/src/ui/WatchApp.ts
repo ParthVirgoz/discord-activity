@@ -17,6 +17,7 @@ import { configureRoomResilience, startRoomKeepAlive, safeRoomSend, bindNetworkR
 import { discordSDK } from "../utils/DiscordSDK.js";
 import { waitForWatchState } from "../utils/roomState.js";
 import { joinWatchRoom, persistWatchRoomId } from "../utils/watchRoomJoin.js";
+import { takeBufferedSessionSync } from "../utils/watchRoomMessageBuffer.js";
 import { detectWatchLayoutMode, type WatchLayoutMode } from "../utils/layoutMode.js";
 
 const DRIFT_CHECK_INTERVAL_MS = 800;
@@ -119,19 +120,25 @@ export class WatchApp {
   private suppressPlaybackToasts = false;
   private autoplayUnlockMode: "muted" | "blocked" | null = null;
   private autoplayCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  private ensurePlayerTask: Promise<void> | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
     this.room = room;
     this.root = root;
     this.renderShell();
+    const bufferedSession = takeBufferedSessionSync(this.room);
     this.bindRoomMessages();
     this.bindStateListeners();
     this.bindConnectionHandlers();
     this.setConnectionStatus("connected");
-    // roomJoined / reconnected carry authoritative sync; fallback if message was missed.
-    setTimeout(() => {
-      if (!this.sessionReady) void this.bootstrapSession();
-    }, 300);
+    if (bufferedSession) {
+      this.handleSessionSync(bufferedSession);
+    } else if (!this.sessionReady) {
+      // roomJoined / reconnected carry authoritative sync; fallback if message was missed.
+      setTimeout(() => {
+        if (!this.sessionReady) void this.bootstrapSession();
+      }, 300);
+    }
   }
 
   private canEditQueue(): boolean {
@@ -1404,6 +1411,9 @@ export class WatchApp {
     }
 
     this.scheduleUnavailableCheck(true, errorCode);
+    if (!this.suppressPlaybackToasts) {
+      this.showStatus("Could not load this video. Skipping when possible.", true);
+    }
   }
 
   private clearUnavailableCheck() {
@@ -1416,11 +1426,9 @@ export class WatchApp {
   private isVideoActuallyPlaying(): boolean {
     if (!this.player) return false;
     const state = this.player.getLastState();
-    if (state === "playing" || state === "paused" || state === "buffering") return true;
-    if (this.player.getDuration() > 0) return true;
-    if (this.player.getCurrentTime() > 0.5) return true;
-    if (this.room.state.videoDurationSec > 0) return true;
-    return false;
+    if (state === "playing" || state === "buffering") return true;
+    if (this.player.getDuration() > 0 && this.player.getCurrentTime() > 0.5) return true;
+    return this.player.getCurrentTime() > 1;
   }
 
   private scheduleUnavailableCheck(deferred = false, errorCode?: number) {
@@ -1528,11 +1536,19 @@ export class WatchApp {
 
   private bindRoomMessages() {
     this.room.onMessage("roomJoined", (data: { isHost: boolean; sync: SyncPayload }) => {
+      if (this.sessionReady) return;
       this.handleSessionSync(data);
     });
 
     this.room.onMessage("reconnected", (data: { isHost: boolean; sync: SyncPayload }) => {
       this.handleSessionSync(data);
+    });
+
+    this.room.onMessage("queueEmpty", () => {
+      this.queueSnapshot = null;
+      this.renderQueue();
+      this.renderVideoTitle();
+      this.updatePlayerControls();
     });
 
     this.room.onMessage("videoSkipped", (data: { reason?: string }) => {
@@ -2098,17 +2114,36 @@ export class WatchApp {
   ): Promise<void> {
     if (!videoId) return;
 
+    const run = () => this.runEnsurePlayer(videoId, options);
+    if (this.ensurePlayerTask) {
+      await this.ensurePlayerTask.catch(() => undefined);
+    }
+    const task = run();
+    this.ensurePlayerTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.ensurePlayerTask === task) {
+        this.ensurePlayerTask = null;
+      }
+    }
+  }
+
+  private async runEnsurePlayer(
+    videoId: string,
+    options: { startTime?: number; autoplay?: boolean } = {}
+  ): Promise<void> {
     const startTime = options.startTime ?? 0;
     const autoplay = options.autoplay ?? false;
     const container = this.root.querySelector("#yt-player") as HTMLElement;
 
     if (this.player && this.loadedVideoId === videoId) {
-      const startTime = options.startTime ?? this.player.getCurrentTime();
-      const autoplay = options.autoplay ?? this.player.isPlaying();
-      if (autoplay) {
-        this.player.play(startTime);
+      const resumeTime = options.startTime ?? this.player.getCurrentTime();
+      const shouldPlay = options.autoplay ?? this.player.isPlaying();
+      if (shouldPlay) {
+        this.player.play(resumeTime);
       } else {
-        this.player.pause(startTime);
+        this.player.pause(resumeTime);
       }
       return;
     }
@@ -2130,7 +2165,7 @@ export class WatchApp {
         this.reportDurationToServer();
         if (autoplay) this.scheduleUnavailableCheck();
       } catch {
-        this.showStatus("Failed to load YouTube player. Try another video.", true);
+        this.loadedVideoId = "";
         void this.retryPlaybackOrDeferUnavailable();
       } finally {
         this.setPlayerLoading(false);
@@ -2147,7 +2182,7 @@ export class WatchApp {
       this.reportDurationToServer();
       if (autoplay) this.scheduleUnavailableCheck();
     } catch {
-      this.showStatus("Failed to load YouTube player. Try another video.", true);
+      this.loadedVideoId = "";
       void this.retryPlaybackOrDeferUnavailable();
     } finally {
       this.setPlayerLoading(false);

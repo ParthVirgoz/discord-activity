@@ -9,7 +9,7 @@ import {
   sanitizeSearchQuery,
   parsePlaylistId,
 } from "../services/youtube";
-import { resolveVideoPlayback } from "../services/pipedStreams";
+import { resolveVideoPlayback, invalidateVideoPlaybackCache } from "../services/pipedStreams";
 
 const STREAM_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -69,56 +69,74 @@ router.get("/media/:videoId", async (req, res) => {
     return;
   }
 
-  const playback = await resolveVideoPlayback(videoId);
+  const bypassCache = req.query.refresh === "1";
+  let playback = await resolveVideoPlayback(videoId, { bypassCache });
+
+  const proxyStream = async (streamUrl: string, duration: number): Promise<boolean> => {
+    try {
+      const headers: Record<string, string> = {
+        "User-Agent": STREAM_USER_AGENT,
+        Accept: "*/*",
+        Referer: "https://www.youtube.com/",
+      };
+      const range = req.headers.range;
+      if (typeof range === "string") headers.Range = range;
+
+      const upstream = await fetch(streamUrl, {
+        headers,
+        signal: AbortSignal.timeout(120_000),
+        redirect: "follow",
+      });
+
+      if (!upstream.ok && upstream.status !== 206) {
+        return false;
+      }
+
+      res.status(upstream.status);
+      const contentType = upstream.headers.get("content-type");
+      if (contentType) res.setHeader("Content-Type", contentType);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "no-store");
+      res.removeHeader("X-Frame-Options");
+      if (duration > 0) {
+        res.setHeader("X-Video-Duration-Sec", String(duration));
+      }
+
+      for (const h of ["content-range", "content-length"] as const) {
+        const v = upstream.headers.get(h);
+        if (v) res.setHeader(h, v);
+      }
+
+      if (!upstream.body) {
+        return false;
+      }
+
+      Readable.fromWeb(upstream.body as import("stream/web").ReadableStream).pipe(res);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   if (!playback) {
     res.status(502).json({ error: "Video stream unavailable" });
     return;
   }
 
-  try {
-    const headers: Record<string, string> = {
-      "User-Agent": STREAM_USER_AGENT,
-      Accept: "*/*",
-      Referer: "https://www.youtube.com/",
-    };
-    const range = req.headers.range;
-    if (typeof range === "string") headers.Range = range;
+  const ok = await proxyStream(playback.streamUrl, playback.duration);
+  if (ok) return;
 
-    const upstream = await fetch(playback.streamUrl, {
-      headers,
-      signal: AbortSignal.timeout(120_000),
-      redirect: "follow",
-    });
+  invalidateVideoPlaybackCache(videoId);
+  playback = await resolveVideoPlayback(videoId, { bypassCache: true });
+  if (!playback) {
+    if (!res.headersSent) res.status(502).json({ error: "Video stream unavailable" });
+    return;
+  }
 
-    if (!upstream.ok && upstream.status !== 206) {
-      res.status(upstream.status).end();
-      return;
-    }
-
-    res.status(upstream.status);
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.setHeader("Content-Type", contentType);
-    res.setHeader("Accept-Ranges", "bytes");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Cache-Control", "no-store");
-    res.removeHeader("X-Frame-Options");
-    if (playback.duration > 0) {
-      res.setHeader("X-Video-Duration-Sec", String(playback.duration));
-    }
-
-    for (const h of ["content-range", "content-length"] as const) {
-      const v = upstream.headers.get(h);
-      if (v) res.setHeader(h, v);
-    }
-
-    if (!upstream.body) {
-      res.status(502).end();
-      return;
-    }
-
-    Readable.fromWeb(upstream.body as import("stream/web").ReadableStream).pipe(res);
-  } catch {
-    if (!res.headersSent) res.status(502).end();
+  const retryOk = await proxyStream(playback.streamUrl, playback.duration);
+  if (!retryOk && !res.headersSent) {
+    res.status(502).json({ error: "Video stream unavailable" });
   }
 });
 

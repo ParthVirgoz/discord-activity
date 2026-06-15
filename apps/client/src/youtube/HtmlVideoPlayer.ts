@@ -2,8 +2,8 @@ import type { VideoPlayer, PlayerEventHandler, YtPlayerState } from "./YouTubePl
 import { getYouTubeMediaUrl } from "../utils/discordUrls.js";
 
 const DISCORD_AUTOPLAY_RETRIES = 12;
-const LOAD_TIMEOUT_MS = 45_000;
-const MAX_SRC_RETRIES = 2;
+const LOAD_TIMEOUT_MS = 60_000;
+const MAX_SRC_RETRIES = 4;
 
 export class HtmlVideoPlayer implements VideoPlayer {
   private video: HTMLVideoElement;
@@ -24,6 +24,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private onAutoplayBlocked?: (mode: "muted" | "blocked") => void;
   private srcRetryCount = 0;
   private playbackMuted = false;
+  private mediaGeneration = 0;
 
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
@@ -49,6 +50,10 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.video.addEventListener("loadedmetadata", () => {
       this.markReady();
       notifyDuration();
+    });
+
+    this.video.addEventListener("loadeddata", () => {
+      this.markReady();
     });
 
     this.video.addEventListener("durationchange", notifyDuration);
@@ -140,16 +145,21 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private retrySourceLoad(): boolean {
     if (!this.videoId || this.srcRetryCount >= MAX_SRC_RETRIES) return false;
     this.srcRetryCount += 1;
+    this.mediaGeneration += 1;
     this.ready = false;
     this.resetReadyPromise();
     const delay = 1500 * this.srcRetryCount;
     setTimeout(() => {
       if (!this.videoId) return;
-      this.video.src = getYouTubeMediaUrl(this.videoId);
+      this.video.src = getYouTubeMediaUrl(this.videoId, this.mediaGeneration);
       this.video.load();
       this.scheduleLoadTimeout();
     }, delay);
     return true;
+  }
+
+  private assignMediaSource(videoId: string): void {
+    this.video.src = getYouTubeMediaUrl(videoId, this.mediaGeneration);
   }
 
   private clearAutoplayRetry(): void {
@@ -276,9 +286,10 @@ export class HtmlVideoPlayer implements VideoPlayer {
     if (videoId !== this.videoId) {
       this.videoId = videoId;
       this.ready = false;
+      this.srcRetryCount = 0;
       this.resetReadyPromise();
       this.lastState = "unstarted";
-      this.video.src = getYouTubeMediaUrl(videoId);
+      this.assignMediaSource(videoId);
       this.video.load();
       this.scheduleLoadTimeout();
     }
