@@ -26,7 +26,15 @@ interface InvidiousVideoResponse {
 }
 
 const CACHE_TTL_MS = 20 * 60 * 1000;
-const cache = new Map<string, { streamUrl: string; duration: number; expiresAt: number }>();
+const cache = new Map<
+  string,
+  {
+    streamUrl: string;
+    duration: number;
+    candidates?: { streamUrl: string; duration: number }[];
+    expiresAt: number;
+  }
+>();
 
 function isProgressiveMp4(stream: { mimeType?: string; type?: string; container?: string }): boolean {
   const mime = stream.mimeType ?? stream.type ?? "";
@@ -41,8 +49,10 @@ function streamScore(stream: PipedStream): number {
   let score = 0;
 
   if (isProgressiveMp4(stream)) score += 100;
-  if (/videoplayback|googlevideo|proxy\.piped/i.test(url)) score += 50;
-  if (/odycdn|lbry/i.test(url)) score += 10;
+  // Piped proxy needs Referer: piped.video — prefer when reachable; LBRY is a solid fallback.
+  if (/odycdn|lbry/i.test(url)) score += 70;
+  if (/proxy\.piped|piped\.private/i.test(url)) score += 55;
+  if (/videoplayback|googlevideo/i.test(url) && !/proxy\.piped/i.test(url)) score += 45;
   if (/360p|medium/i.test(quality)) score += 40;
   if (/480p/i.test(quality)) score += 32;
   if (/720p/i.test(quality)) score += 18;
@@ -51,13 +61,37 @@ function streamScore(stream: PipedStream): number {
   return score;
 }
 
+function pickVideoStreams(streams: PipedStream[]): PipedStream[] {
+  return streams
+    .filter((s) => s.url && isProgressiveMp4(s))
+    .sort((a, b) => streamScore(b) - streamScore(a));
+}
+
 function pickVideoStream(streams: PipedStream[]): PipedStream | null {
-  const candidates = streams.filter((s) => s.url && isProgressiveMp4(s));
-  if (candidates.length === 0) return null;
-  return candidates.sort((a, b) => streamScore(b) - streamScore(a))[0] ?? null;
+  return pickVideoStreams(streams)[0] ?? null;
+}
+
+/** Upstream Referer required by Piped proxy / LBRY CDN (wrong Referer → 403). */
+export function refererForStreamUrl(streamUrl: string): string {
+  if (/proxy\.piped|piped\.private|piped\.video/i.test(streamUrl)) {
+    return "https://piped.video/";
+  }
+  if (/odycdn|lbry|odysee/i.test(streamUrl)) {
+    return "https://odysee.com/";
+  }
+  return "https://www.youtube.com/";
 }
 
 async function fetchPipedPlayback(videoId: string): Promise<{ streamUrl: string; duration: number } | null> {
+  const candidates = await fetchPipedPlaybackCandidates(videoId);
+  return candidates[0] ?? null;
+}
+
+async function fetchPipedPlaybackCandidates(
+  videoId: string
+): Promise<{ streamUrl: string; duration: number }[]> {
+  const results: { streamUrl: string; duration: number }[] = [];
+
   for (const base of PIPED_INSTANCES) {
     try {
       const res = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
@@ -67,18 +101,20 @@ async function fetchPipedPlayback(videoId: string): Promise<{ streamUrl: string;
       if (!res.ok) continue;
 
       const data = (await res.json()) as PipedStreamsResponse;
-      const picked = pickVideoStream(data.videoStreams ?? []);
-      if (!picked?.url) continue;
+      const duration = Math.max(0, Math.floor(data.duration ?? 0));
+      const picked = pickVideoStreams(data.videoStreams ?? []);
 
-      return {
-        streamUrl: picked.url,
-        duration: Math.max(0, Math.floor(data.duration ?? 0)),
-      };
+      for (const stream of picked) {
+        if (!stream.url) continue;
+        results.push({ streamUrl: stream.url, duration });
+      }
+
+      if (results.length > 0) return results;
     } catch {
       /* try next Piped instance */
     }
   }
-  return null;
+  return results;
 }
 
 async function fetchInvidiousPlayback(videoId: string): Promise<{ streamUrl: string; duration: number } | null> {
@@ -107,6 +143,46 @@ async function fetchInvidiousPlayback(videoId: string): Promise<{ streamUrl: str
   };
 }
 
+export async function resolveVideoPlaybackCandidates(
+  videoId: string,
+  options: { bypassCache?: boolean } = {}
+): Promise<{ streamUrl: string; duration: number }[]> {
+  if (!isValidVideoId(videoId)) return [];
+
+  const cacheKey = `candidates:${videoId}`;
+  if (!options.bypassCache) {
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.candidates;
+    }
+  }
+
+  const seen = new Set<string>();
+  const candidates: { streamUrl: string; duration: number }[] = [];
+
+  const add = (entry: { streamUrl: string; duration: number } | null) => {
+    if (!entry?.streamUrl || seen.has(entry.streamUrl)) return;
+    seen.add(entry.streamUrl);
+    candidates.push(entry);
+  };
+
+  for (const entry of await fetchPipedPlaybackCandidates(videoId)) {
+    add(entry);
+  }
+  add(await fetchInvidiousPlayback(videoId));
+
+  if (candidates.length > 0) {
+    cache.set(cacheKey, {
+      streamUrl: candidates[0].streamUrl,
+      duration: candidates[0].duration,
+      candidates,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    });
+  }
+
+  return candidates;
+}
+
 export async function resolveVideoPlayback(
   videoId: string,
   options: { bypassCache?: boolean } = {}
@@ -120,13 +196,14 @@ export async function resolveVideoPlayback(
     }
   }
 
-  const piped = await fetchPipedPlayback(videoId);
-  const resolved = piped ?? (await fetchInvidiousPlayback(videoId));
+  const candidates = await resolveVideoPlaybackCandidates(videoId, options);
+  const resolved = candidates[0] ?? null;
   if (!resolved) return null;
 
   cache.set(videoId, {
     streamUrl: resolved.streamUrl,
     duration: resolved.duration,
+    candidates,
     expiresAt: Date.now() + CACHE_TTL_MS,
   });
   return resolved;
@@ -134,6 +211,7 @@ export async function resolveVideoPlayback(
 
 export function invalidateVideoPlaybackCache(videoId: string): void {
   cache.delete(videoId);
+  cache.delete(`candidates:${videoId}`);
 }
 
 /** @deprecated use resolveVideoPlayback */

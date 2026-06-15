@@ -1476,9 +1476,8 @@ export class WatchApp {
   }
 
   private handlePlayerError(errorCode: number) {
-    if (!this.isHost) return;
     if (errorCode === 100 || errorCode === 101) {
-      this.signalVideoUnavailable(errorCode);
+      if (this.isHost) this.signalVideoUnavailable(errorCode);
       return;
     }
     void this.retryPlaybackOrDeferUnavailable(errorCode);
@@ -2212,7 +2211,7 @@ export class WatchApp {
 
       await this.ensurePlayer(sync.videoId, {
         startTime: sync.currentTime,
-        autoplay: false,
+        autoplay: sync.isPlaying,
       });
 
       if (!this.player || !sync.videoId) return;
@@ -2271,7 +2270,8 @@ export class WatchApp {
 
     if (this.player && this.loadedVideoId === videoId) {
       const resumeTime = options.startTime ?? this.player.getCurrentTime();
-      const shouldPlay = options.autoplay ?? this.player.isPlaying();
+      const shouldPlay =
+        options.autoplay !== undefined ? options.autoplay : this.player.isPlaying();
       if (shouldPlay) {
         this.player.play(resumeTime);
       } else {
@@ -2332,7 +2332,7 @@ export class WatchApp {
       const videoChanged = sync.videoId !== this.loadedVideoId;
       await this.ensurePlayer(sync.videoId, {
         startTime: sync.currentTime,
-        autoplay: false,
+        autoplay: sync.isPlaying,
       });
       if (!this.player || !sync.videoId) return;
 

@@ -34,7 +34,9 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.onAutoplayBlocked = handlers.onAutoplayBlocked;
 
     this.video = document.createElement("video");
-    this.video.playsInline = true;
+    this.video.setAttribute("playsinline", "");
+    this.video.setAttribute("webkit-playsinline", "");
+    this.video.crossOrigin = "anonymous";
     this.video.controls = false;
     this.video.preload = "auto";
     this.video.style.cssText = "width:100%;height:100%;background:#000;object-fit:contain;";

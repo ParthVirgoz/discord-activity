@@ -9,7 +9,7 @@ import {
   sanitizeSearchQuery,
   parsePlaylistId,
 } from "../services/youtube";
-import { resolveVideoPlayback, invalidateVideoPlaybackCache } from "../services/pipedStreams";
+import { resolveVideoPlaybackCandidates, invalidateVideoPlaybackCache, refererForStreamUrl } from "../services/pipedStreams";
 
 const STREAM_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -50,15 +50,16 @@ router.get("/info/:videoId", async (req, res) => {
     return;
   }
 
-  const playback = await resolveVideoPlayback(videoId);
-  if (!playback) {
+  const playback = await resolveVideoPlaybackCandidates(videoId);
+  const first = playback[0];
+  if (!first) {
     res.status(502).json({ error: "Video info unavailable" });
     return;
   }
 
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Cache-Control", "public, max-age=3600");
-  res.json({ durationSec: playback.duration });
+  res.json({ durationSec: first.duration });
 });
 
 /** Proxied video stream for Discord (iframe YouTube is CSP-blocked). Supports Range for seeking. */
@@ -70,14 +71,13 @@ router.get("/media/:videoId", async (req, res) => {
   }
 
   const bypassCache = req.query.refresh === "1";
-  let playback = await resolveVideoPlayback(videoId, { bypassCache });
 
   const proxyStream = async (streamUrl: string, duration: number): Promise<boolean> => {
     try {
       const headers: Record<string, string> = {
         "User-Agent": STREAM_USER_AGENT,
         Accept: "*/*",
-        Referer: "https://www.youtube.com/",
+        Referer: refererForStreamUrl(streamUrl),
       };
       const range = req.headers.range;
       if (typeof range === "string") headers.Range = range;
@@ -93,8 +93,11 @@ router.get("/media/:videoId", async (req, res) => {
       }
 
       res.status(upstream.status);
-      const contentType = upstream.headers.get("content-type");
-      if (contentType) res.setHeader("Content-Type", contentType);
+      let contentType = upstream.headers.get("content-type");
+      if (!contentType || contentType.includes("text/plain")) {
+        contentType = "video/mp4";
+      }
+      res.setHeader("Content-Type", contentType);
       res.setHeader("Accept-Ranges", "bytes");
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Cache-Control", "no-store");
@@ -119,23 +122,22 @@ router.get("/media/:videoId", async (req, res) => {
     }
   };
 
-  if (!playback) {
-    res.status(502).json({ error: "Video stream unavailable" });
-    return;
-  }
+  const tryCandidates = async (refresh: boolean): Promise<boolean> => {
+    const candidates = await resolveVideoPlaybackCandidates(videoId, { bypassCache: refresh });
+    for (const playback of candidates) {
+      if (await proxyStream(playback.streamUrl, playback.duration)) {
+        return true;
+      }
+    }
+    return false;
+  };
 
-  const ok = await proxyStream(playback.streamUrl, playback.duration);
-  if (ok) return;
+  if (await tryCandidates(bypassCache)) return;
 
   invalidateVideoPlaybackCache(videoId);
-  playback = await resolveVideoPlayback(videoId, { bypassCache: true });
-  if (!playback) {
-    if (!res.headersSent) res.status(502).json({ error: "Video stream unavailable" });
-    return;
-  }
+  if (await tryCandidates(true)) return;
 
-  const retryOk = await proxyStream(playback.streamUrl, playback.duration);
-  if (!retryOk && !res.headersSent) {
+  if (!res.headersSent) {
     res.status(502).json({ error: "Video stream unavailable" });
   }
 });

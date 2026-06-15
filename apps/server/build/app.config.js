@@ -16,11 +16,8 @@ const youtube_1 = __importDefault(require("./routes/youtube"));
 const securityHeaders_1 = require("./utils/securityHeaders");
 exports.default = (0, colyseus_1.defineServer)({
     rooms: {
-        // Production Railway already uses "my_room" — keep this name
+        // Production Railway uses "my_room" — single room name per voice channel (filterBy channelId)
         my_room: (0, colyseus_1.defineRoom)(MyRoom_1.MyRoom, {
-            filterBy: ['channelId'],
-        }),
-        watch_room: (0, colyseus_1.defineRoom)(MyRoom_1.MyRoom, {
             filterBy: ['channelId'],
         }),
     },
