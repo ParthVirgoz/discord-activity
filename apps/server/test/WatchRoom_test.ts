@@ -176,7 +176,7 @@ describe("WatchRoom", () => {
     await room.waitForNextPatch();
     host.send("videoEnded", {});
     await room.waitForNextPatch();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 150));
 
     assert.strictEqual(room.state.queue[0].status, "played");
     assert.strictEqual(room.state.queue[1].status, "playing");

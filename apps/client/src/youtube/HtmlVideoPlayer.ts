@@ -1,7 +1,7 @@
 import type { VideoPlayer, PlayerEventHandler, YtPlayerState } from "./YouTubePlayer.js";
-import { getYouTubeMediaUrl, isDiscordActivity } from "../utils/discordUrls.js";
+import { getYouTubeMediaUrl } from "../utils/discordUrls.js";
 
-const DISCORD_AUTOPLAY_RETRIES = 8;
+const DISCORD_AUTOPLAY_RETRIES = 12;
 const LOAD_TIMEOUT_MS = 45_000;
 const MAX_SRC_RETRIES = 2;
 
@@ -21,13 +21,16 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private onDurationChange?: (durationSec: number) => void;
   private onReady?: () => void;
   private onError?: (errorCode: number) => void;
+  private onAutoplayBlocked?: (mode: "muted" | "blocked") => void;
   private srcRetryCount = 0;
+  private playbackMuted = false;
 
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
     this.onDurationChange = handlers.onDurationChange;
     this.onReady = handlers.onReady;
     this.onError = handlers.onError;
+    this.onAutoplayBlocked = handlers.onAutoplayBlocked;
 
     this.video = document.createElement("video");
     this.video.playsInline = true;
@@ -161,10 +164,15 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.seekResumeCleanup = null;
   }
 
-  /** Discord often blocks the first autoplay attempt — retry briefly. */
+  /** Discord often blocks the first autoplay attempt — retry, then try muted play. */
   private scheduleAutoplayKick(attempt = 0): void {
     this.clearAutoplayRetry();
-    if (!this.wantsPlay || this.isPlaying() || attempt >= DISCORD_AUTOPLAY_RETRIES) return;
+    if (!this.wantsPlay || this.isPlaying()) return;
+
+    if (attempt >= DISCORD_AUTOPLAY_RETRIES) {
+      void this.tryMutedAutoplay();
+      return;
+    }
 
     void this.video.play().catch(() => {
       /* retry */
@@ -174,10 +182,28 @@ export class HtmlVideoPlayer implements VideoPlayer {
     }, 400);
   }
 
+  /** Muted autoplay is allowed in most embedded browsers — keeps sync until user taps. */
+  private async tryMutedAutoplay(): Promise<void> {
+    if (!this.wantsPlay || this.isPlaying()) return;
+
+    const restoreMuted = this.video.muted;
+    this.video.muted = true;
+    try {
+      await this.video.play();
+      this.playbackMuted = true;
+      this.onAutoplayBlocked?.("muted");
+      return;
+    } catch {
+      this.video.muted = restoreMuted;
+    }
+
+    this.onAutoplayBlocked?.("blocked");
+  }
+
   private tryResumePlayback(): void {
     if (!this.wantsPlay || this.isPlaying()) return;
     void this.video.play().catch(() => {
-      if (isDiscordActivity()) this.scheduleAutoplayKick();
+      this.scheduleAutoplayKick();
     });
   }
 
@@ -207,8 +233,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private startPlayback(): void {
     const playNow = () => {
       void this.video.play().catch(() => {
-        if (isDiscordActivity()) this.scheduleAutoplayKick();
-        else this.onError?.(150);
+        this.scheduleAutoplayKick();
       });
     };
 
@@ -284,6 +309,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
   pause(atTime?: number): void {
     this.wantsPlay = false;
+    this.playbackMuted = false;
     this.clearAutoplayRetry();
     this.clearSeekResume();
     if (atTime !== undefined) {
@@ -319,6 +345,21 @@ export class HtmlVideoPlayer implements VideoPlayer {
 
   isPlaying(): boolean {
     return !this.video.paused && !this.video.ended;
+  }
+
+  isPlaybackMuted(): boolean {
+    return this.playbackMuted && this.video.muted;
+  }
+
+  unlockPlayback(): void {
+    this.wantsPlay = true;
+    this.playbackMuted = false;
+    this.video.muted = false;
+    const time = this.getCurrentTime();
+    if (time > 0) this.setMediaTime(time);
+    void this.video.play().catch(() => {
+      this.scheduleAutoplayKick();
+    });
   }
 
   setPlaybackRate(rate: number): void {

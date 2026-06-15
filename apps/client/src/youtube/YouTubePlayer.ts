@@ -28,6 +28,8 @@ export interface VideoPlayer {
   getDuration(): number;
   getLastState(): YtPlayerState;
   isPlaying(): boolean;
+  isPlaybackMuted(): boolean;
+  unlockPlayback(): void;
   setPlaybackRate(_rate: number): void;
   waitForReady(): Promise<void>;
   destroy(): void;
@@ -41,13 +43,15 @@ export type PlayerEventHandler = {
   onDurationChange?: (durationSec: number) => void;
   /** Fired when YouTube reports a playback error (unavailable, embedding blocked, etc.). */
   onError?: (errorCode: number) => void;
+  /** Browser blocked autoplay — show tap-to-play UI (`muted` = playing without sound). */
+  onAutoplayBlocked?: (mode: "muted" | "blocked") => void;
 };
 
 function postMessageTarget(): string {
   return getYouTubeEmbedPostMessageTarget();
 }
 
-const DISCORD_AUTOPLAY_RETRIES = 8;
+const DISCORD_AUTOPLAY_RETRIES = 12;
 
 function buildEmbedUrl(videoId: string, startSec: number, autoplay: boolean): string {
   return buildYouTubeEmbedUrl(videoId, startSec, autoplay);
@@ -82,6 +86,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
   private onDurationChange?: (durationSec: number) => void;
   private onReady?: () => void;
   private onError?: (errorCode: number) => void;
+  private onAutoplayBlocked?: (mode: "muted" | "blocked") => void;
   private messageHandler: (event: MessageEvent) => void;
   private readyPromise: Promise<void> = Promise.resolve();
   private resolveReady: (() => void) | null = null;
@@ -96,6 +101,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     this.onDurationChange = handlers.onDurationChange;
     this.onReady = handlers.onReady;
     this.onError = handlers.onError;
+    this.onAutoplayBlocked = handlers.onAutoplayBlocked;
 
     this.iframe = document.createElement("iframe");
     this.iframe.id = `yt-embed-${Math.random().toString(36).slice(2, 9)}`;
@@ -117,8 +123,8 @@ export class PostMessageVideoPlayer implements VideoPlayer {
       this.notifyListening();
       this.subscribeToPlayerEvents();
       this.startInfoPolling();
-      if (isDiscordActivity() && this.playing) {
-        this.scheduleDiscordAutoplayKick();
+      if (this.playing) {
+        this.scheduleAutoplayKick();
       }
       if (!this.ready) {
         this.ready = true;
@@ -205,14 +211,24 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     }
   }
 
-  /** Discord proxy embeds often ignore the first play command — retry briefly. */
-  private scheduleDiscordAutoplayKick(attempt = 0) {
+  /** Embeds often ignore the first play command — retry briefly, then prompt user. */
+  private scheduleAutoplayKick(attempt = 0) {
     this.clearAutoplayRetry();
-    if (!this.playing || attempt >= DISCORD_AUTOPLAY_RETRIES) return;
+    if (!this.playing || attempt >= DISCORD_AUTOPLAY_RETRIES) {
+      if (
+        this.playing &&
+        this.lastState !== "playing" &&
+        this.lastState !== "buffering"
+      ) {
+        this.onAutoplayBlocked?.("blocked");
+      }
+      return;
+    }
 
     this.postCommand("playVideo");
     this.autoplayRetryTimer = setTimeout(() => {
-      this.scheduleDiscordAutoplayKick(attempt + 1);
+      if (this.lastState === "playing" || this.lastState === "buffering") return;
+      this.scheduleAutoplayKick(attempt + 1);
     }, 400);
   }
 
@@ -296,6 +312,7 @@ export class PostMessageVideoPlayer implements VideoPlayer {
     }
     this.playing = true;
     this.timeAnchorAt = Date.now();
+    this.scheduleAutoplayKick();
   }
 
   pause(atTime?: number): void {
@@ -332,6 +349,16 @@ export class PostMessageVideoPlayer implements VideoPlayer {
 
   isPlaying(): boolean {
     return this.playing;
+  }
+
+  isPlaybackMuted(): boolean {
+    return false;
+  }
+
+  unlockPlayback(): void {
+    this.playing = true;
+    this.postCommand("playVideo");
+    this.scheduleAutoplayKick();
   }
 
   setPlaybackRate(): void {

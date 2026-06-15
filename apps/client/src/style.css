@@ -751,6 +751,48 @@ html, body {
   z-index: 2;
 }
 
+.autoplay-unlock {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  border: 0;
+  cursor: pointer;
+  color: #fff;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.autoplay-unlock.hidden {
+  display: none;
+}
+
+.autoplay-unlock-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(88, 101, 242, 0.9);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.autoplay-unlock-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+  max-width: 220px;
+  line-height: 1.35;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
 .player-controls {
   position: absolute;
   inset: 0;

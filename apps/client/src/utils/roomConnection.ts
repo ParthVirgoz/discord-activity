@@ -38,9 +38,16 @@ export function startRoomKeepAlive(
 }
 
 export function bindNetworkRecoveryHandlers(room: Room, onRecover: () => void): () => void {
-  const handleOnline = () => onRecover();
+  const handleOnline = () => {
+    if (!room.connection?.isOpen) return;
+    if (room.reconnection.isReconnecting) return;
+    onRecover();
+  };
   const handleVisibility = () => {
-    if (document.visibilityState === "visible") onRecover();
+    if (document.visibilityState !== "visible") return;
+    if (!room.connection?.isOpen) return;
+    if (room.reconnection.isReconnecting) return;
+    onRecover();
   };
   window.addEventListener("online", handleOnline);
   document.addEventListener("visibilitychange", handleVisibility);

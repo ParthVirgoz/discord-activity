@@ -16,6 +16,15 @@ import {
 const DRIFT_THRESHOLD_SEC = 2;
 const MESSAGE_COOLDOWN_MS = 50;
 
+type RateBucket = "playback" | "queue" | "admin" | "sync";
+
+const RATE_LIMIT_MS: Record<RateBucket, number> = {
+  playback: 30,
+  queue: MESSAGE_COOLDOWN_MS,
+  admin: MESSAGE_COOLDOWN_MS,
+  sync: 100,
+};
+
 export type QueueItemStatus = "queued" | "playing" | "played" | "unavailable";
 
 export class QueueItem extends Schema {
@@ -54,6 +63,16 @@ export class WatchRoomState extends Schema {
   @type({ map: Member }) members = new MapSchema<Member>();
 }
 
+export interface QueueSnapshotItem {
+  videoId: string;
+  title: string;
+  channelName: string;
+  addedBy: string;
+  addedBySessionId: string;
+  status: QueueItemStatus;
+  durationSec: number;
+}
+
 export interface SyncPayload {
   videoId: string;
   videoTitle: string;
@@ -68,6 +87,8 @@ export interface SyncPayload {
   allowReplayPlayed: boolean;
   dimPlayedInPlaylist: boolean;
   continueFromPosition: boolean;
+  /** Authoritative playlist snapshot for reconnect bootstrap. */
+  queue?: QueueSnapshotItem[];
 }
 
 export interface PermissionsPayload {
@@ -130,6 +151,30 @@ export class WatchRoom extends Room {
     };
   }
 
+  private buildQueueSnapshot(): QueueSnapshotItem[] {
+    const snapshot: QueueSnapshotItem[] = [];
+    for (const item of this.state.queue) {
+      snapshot.push({
+        videoId: item.videoId,
+        title: item.title,
+        channelName: item.channelName,
+        addedBy: item.addedBy,
+        addedBySessionId: item.addedBySessionId,
+        status: item.status,
+        durationSec: item.durationSec,
+      });
+    }
+    return snapshot;
+  }
+
+  /** Playback + playlist snapshot for join / reconnect / sync responses. */
+  private buildSyncMessage(forceTime?: number): SyncPayload {
+    return {
+      ...this.buildSyncPayload(forceTime),
+      queue: this.buildQueueSnapshot(),
+    };
+  }
+
   private buildPermissionsPayload(): PermissionsPayload {
     return {
       allowEveryoneQueue: this.state.allowEveryoneQueue,
@@ -141,12 +186,23 @@ export class WatchRoom extends Room {
     };
   }
 
-  private rateLimit(client: Client): boolean {
+  private rateLimit(client: Client, bucket: RateBucket): boolean {
+    const key = `${client.sessionId}:${bucket}`;
     const now = Date.now();
-    const last = this.lastMessageAt.get(client.sessionId) ?? 0;
-    if (now - last < MESSAGE_COOLDOWN_MS) return false;
-    this.lastMessageAt.set(client.sessionId, now);
+    const last = this.lastMessageAt.get(key) ?? 0;
+    const gap = RATE_LIMIT_MS[bucket];
+    if (gap > 0 && now - last < gap) return false;
+    this.lastMessageAt.set(key, now);
     return true;
+  }
+
+  private clearRateLimits(sessionId: string): void {
+    const prefix = `${sessionId}:`;
+    for (const key of [...this.lastMessageAt.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.lastMessageAt.delete(key);
+      }
+    }
   }
 
   private applyPlay(currentTime: number, playbackRate?: number) {
@@ -242,6 +298,17 @@ export class WatchRoom extends Room {
     return !this.state.queue.some((item) => item.status === "playing");
   }
 
+  private broadcastHostPlayback(
+    type: "play" | "pause",
+    data: { currentTime: number }
+  ): void {
+    const fromSessionId = this.state.hostSessionId;
+    this.broadcast(type, {
+      ...data,
+      ...(fromSessionId ? { fromSessionId } : {}),
+    });
+  }
+
   private tryAutostart(): void {
     if (!this.isQueueIdle()) return;
     const next = this.state.queue.find((i) => i.status === "queued");
@@ -256,7 +323,7 @@ export class WatchRoom extends Room {
     this.state.lastUpdatedAt = Date.now();
     this.applyPlay(0);
     this.broadcast("videoChanged", this.buildSyncPayload(0));
-    this.broadcast("play", { currentTime: 0 });
+    this.broadcastHostPlayback("play", { currentTime: 0 });
   }
 
   private findPlayingIndex(): number {
@@ -292,7 +359,7 @@ export class WatchRoom extends Room {
 
     this.broadcast("videoChanged", this.buildSyncPayload(0));
     if (autoPlay) {
-      this.broadcast("play", { currentTime: 0 });
+      this.broadcastHostPlayback("play", { currentTime: 0 });
     }
   }
 
@@ -302,7 +369,7 @@ export class WatchRoom extends Room {
     this.state.videoDurationSec = 0;
     this.state.currentTime = 0;
     this.applyPause(0);
-    this.broadcast("pause", { currentTime: 0 });
+    this.broadcastHostPlayback("pause", { currentTime: 0 });
     this.broadcast("videoChanged", this.buildSyncPayload(0));
     this.broadcast("queueEmpty", {});
   }
@@ -333,7 +400,7 @@ export class WatchRoom extends Room {
 
     if (!this.advanceQueue(true)) {
       this.applyPause(this.effectiveTime());
-      this.broadcast("pause", { currentTime: this.state.currentTime });
+      this.broadcastHostPlayback("pause", { currentTime: this.state.currentTime });
       this.broadcast("queueEmpty", {});
     }
   }
@@ -392,7 +459,7 @@ export class WatchRoom extends Room {
 
     this.broadcast("videoChanged", this.buildSyncPayload(0));
     if (autoPlay) {
-      this.broadcast("play", { currentTime: 0 });
+      this.broadcastHostPlayback("play", { currentTime: 0 });
     }
   }
 
@@ -410,7 +477,7 @@ export class WatchRoom extends Room {
     }, 1000);
 
     this.onMessage("play", (client, msg: { currentTime?: number }) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       this.applyPlay(clampTime(msg?.currentTime));
       this.broadcast("play", {
         currentTime: this.state.currentTime,
@@ -419,7 +486,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("pause", (client, msg: { currentTime?: number }) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       this.applyPause(clampTime(msg?.currentTime));
       this.broadcast("pause", {
         currentTime: this.state.currentTime,
@@ -428,7 +495,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("seek", (client, msg: { currentTime?: number }) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       this.applySeek(clampTime(msg?.currentTime));
       this.broadcast("seek", {
         currentTime: this.state.currentTime,
@@ -437,7 +504,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("setRate", (client, msg: { rate?: number; currentTime?: number }) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       this.state.playbackRate = clampPlaybackRate(msg?.rate);
       this.applySeek(clampTime(msg?.currentTime));
       this.broadcast("setRate", {
@@ -452,7 +519,7 @@ export class WatchRoom extends Room {
         client,
         msg: { videoId?: string; title?: string; durationSec?: number; autoPlay?: boolean }
       ) => {
-        if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+        if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
         if (!isValidVideoId(msg?.videoId)) return;
 
         const addedBy = sanitizeUsername(client.auth?.username);
@@ -471,7 +538,7 @@ export class WatchRoom extends Room {
     this.onMessage(
       "addToQueue",
       (client, msg: { videoId?: string; title?: string; channelName?: string; durationSec?: number }) => {
-        if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+        if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
         if (!isValidVideoId(msg?.videoId)) return;
 
         this.makeRoomInQueue();
@@ -498,7 +565,7 @@ export class WatchRoom extends Room {
           items?: { videoId?: string; title?: string; channelName?: string; durationSec?: number }[];
         }
       ) => {
-        if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+        if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
         if (!Array.isArray(msg?.items)) return;
 
         const addedBy = sanitizeUsername(client.auth?.username);
@@ -528,7 +595,7 @@ export class WatchRoom extends Room {
     );
 
     this.onMessage("removeFromQueue", (client, msg: { index?: number }) => {
-      if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+      if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
       const index = clampQueueIndex(msg?.index, this.state.queue.length);
       if (index === null) return;
       if (this.state.queue[index].status === "playing") return;
@@ -536,7 +603,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("moveQueueItem", (client, msg: { fromIndex?: number; toIndex?: number }) => {
-      if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+      if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
       const from = clampQueueIndex(msg?.fromIndex, this.state.queue.length);
       const to = clampQueueIndex(msg?.toIndex, this.state.queue.length);
       if (from === null || to === null || from === to) return;
@@ -557,7 +624,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("playNextInQueue", (client, msg: { index?: number }) => {
-      if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+      if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
       const from = clampQueueIndex(msg?.index, this.state.queue.length);
       if (from === null) return;
       if (this.state.queue[from].status !== "queued") return;
@@ -577,7 +644,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("clearQueue", (client) => {
-      if (!this.rateLimit(client) || !this.canEditQueue(client)) return;
+      if (!this.rateLimit(client, "queue") || !this.canEditQueue(client)) return;
       const playing = this.state.queue.find((item) => item.status === "playing");
       this.state.queue.clear();
       if (playing) {
@@ -586,7 +653,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("skipVideo", (client) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       if (!this.advanceQueue(true)) {
         this.markPlayingAsPlayed();
         this.state.videoId = "";
@@ -599,19 +666,19 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("playQueueItem", (client, msg: { index?: number }) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       const index = clampQueueIndex(msg?.index, this.state.queue.length);
       if (index === null) return;
       this.playQueueItemAt(index, true);
     });
 
     this.onMessage("videoEnded", (client) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       this.handleVideoComplete();
     });
 
     this.onMessage("videoUnavailable", (client, msg: { errorCode?: number }) => {
-      if (!this.rateLimit(client) || !this.canControlPlayback(client)) return;
+      if (!this.rateLimit(client, "playback") || !this.canControlPlayback(client)) return;
       if (typeof msg?.errorCode === "number" && msg.errorCode > 0) {
         console.warn(`Skipping unavailable video ${this.state.videoId} (YouTube error ${msg.errorCode})`);
       }
@@ -619,7 +686,7 @@ export class WatchRoom extends Room {
     });
 
     this.onMessage("setVideoDuration", (client, msg: { durationSec?: number }) => {
-      if (!this.rateLimit(client)) return;
+      if (!this.rateLimit(client, "admin")) return;
       const durationSec = clampDuration(msg?.durationSec);
       if (durationSec <= 0) return;
 
@@ -647,7 +714,7 @@ export class WatchRoom extends Room {
           continueFromPosition?: boolean;
         }
       ) => {
-        if (!this.rateLimit(client) || !this.isHost(client)) return;
+        if (!this.rateLimit(client, "admin") || !this.isHost(client)) return;
         if (typeof msg.allowEveryoneQueue === "boolean") {
           this.state.allowEveryoneQueue = msg.allowEveryoneQueue;
         }
@@ -671,30 +738,30 @@ export class WatchRoom extends Room {
     );
 
     this.onMessage("transferHost", (client, msg: { sessionId?: string }) => {
-      if (!this.rateLimit(client) || !this.isHost(client)) return;
+      if (!this.rateLimit(client, "admin") || !this.isHost(client)) return;
       if (typeof msg?.sessionId !== "string" || !this.state.members.has(msg.sessionId)) return;
       this.state.hostSessionId = msg.sessionId;
       this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
     });
 
     this.onMessage("claimHost", (client) => {
-      if (!this.rateLimit(client) || this.isHost(client)) return;
+      if (!this.rateLimit(client, "sync") || this.isHost(client)) return;
       if (!this.state.allowOthersToHost) return;
       this.state.hostSessionId = client.sessionId;
       this.broadcast("hostChanged", { hostSessionId: this.state.hostSessionId });
     });
 
     this.onMessage("syncReport", (client, msg: { currentTime?: number }) => {
-      if (!this.rateLimit(client) || this.isHost(client)) return;
+      if (!this.rateLimit(client, "sync") || this.isHost(client)) return;
       const clientTime = clampTime(msg?.currentTime);
       const serverTime = this.effectiveTime();
       if (Math.abs(serverTime - clientTime) > DRIFT_THRESHOLD_SEC) {
-        client.send("forceSync", this.buildSyncPayload(serverTime));
+        client.send("forceSync", this.buildSyncMessage(serverTime));
       }
     });
 
     this.onMessage("syncRequest", (client) => {
-      client.send("sync", this.buildSyncPayload());
+      client.send("sync", this.buildSyncMessage());
     });
   }
 
@@ -732,7 +799,7 @@ export class WatchRoom extends Room {
     client.send("roomJoined", {
       sessionId: client.sessionId,
       isHost: this.isHost(client),
-      sync: this.buildSyncPayload(),
+      sync: this.buildSyncMessage(),
       permissions: this.buildPermissionsPayload(),
     });
   }
@@ -751,7 +818,7 @@ export class WatchRoom extends Room {
   }
 
   async onLeave(client: Client, code: number) {
-    this.lastMessageAt.delete(client.sessionId);
+    this.clearRateLimits(client.sessionId);
     const sessionId = client.sessionId;
     const wasHost = this.isHost(client);
 
@@ -768,6 +835,12 @@ export class WatchRoom extends Room {
 
     try {
       await this.allowReconnection(client, 180);
+      client.send("reconnected", {
+        sessionId: client.sessionId,
+        isHost: this.isHost(client),
+        sync: this.buildSyncMessage(),
+        permissions: this.buildPermissionsPayload(),
+      });
       return;
     } catch {
       /* reconnection window expired */

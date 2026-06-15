@@ -16,6 +16,14 @@ export function isWatchTogetherRoom(room: Room<WatchRoomState>): boolean {
   );
 }
 
+function stateHasDecodedData(room: Room<WatchRoomState>): boolean {
+  const members = room.state?.members;
+  const queue = room.state?.queue;
+  const memberCount = members && typeof members.size === "number" ? members.size : 0;
+  const queueLength = queue && typeof queue.length === "number" ? queue.length : 0;
+  return memberCount > 0 || queueLength > 0;
+}
+
 /** Wait until Colyseus exposes the watch-room schema (members + queue). */
 export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 8000): Promise<void> {
   if (isWatchTogetherRoom(room)) {
@@ -50,7 +58,7 @@ export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 8000):
 }
 
 /**
- * After schema exists, wait for the first decoded state patch so queue/members
+ * After schema exists, wait for a decoded state patch so members/queue
  * are populated before client bootstrap (critical for reconnect).
  */
 function waitForStatePatch(room: Room<WatchRoomState>, timeoutMs: number): Promise<void> {
@@ -74,9 +82,9 @@ function waitForStatePatch(room: Room<WatchRoomState>, timeoutMs: number): Promi
     const timer = setTimeout(finish, timeoutMs);
     room.onStateChange(onChange);
 
-    // Colyseus may expose schema before the first patch is applied — wait one frame.
+    // Schema may mount before the first patch — only short-circuit when data is present.
     requestAnimationFrame(() => {
-      if (!patchSeen && room.state?.members != null) {
+      if (!patchSeen && stateHasDecodedData(room)) {
         onChange();
       }
     });

@@ -1,6 +1,6 @@
 import type { Room } from "@colyseus/sdk";
 import { Callbacks } from "@colyseus/sdk";
-import type { WatchRoomState, QueueItem, Member } from "../schema.js";
+import type { WatchRoomState, QueueItem, Member, QueueItemStatus } from "../schema.js";
 import { createYouTubePlayer, type VideoPlayer, type YtPlayerState } from "../youtube/YouTubePlayer.js";
 import { parseYouTubeId, parsePlaylistId, isYouTubeLinkInput, fetchVideoTitle, parseDurationToSeconds, formatDurationSeconds, getYouTubeThumbnail } from "../utils/youtube.js";
 import { isRawIpHost } from "../utils/youtubeEmbed.js";
@@ -28,7 +28,24 @@ const LOCAL_SYNC_GRACE_MS = 1500;
 const STATE_BROADCAST_SUPPRESS_MS = 600;
 /** Piped stream lookup + proxy can take a long time in Discord — wait before skipping. */
 const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 60_000 : 12_000;
+/** Ignore schema drift correction briefly after a play/pause/seek message. */
+const PLAYBACK_MESSAGE_GRACE_MS = 2500;
+/** Shorter post-sync grace for host so manual controls reach the server quickly. */
+const HOST_SYNC_GRACE_MS = 500;
+const VIEWER_SYNC_GRACE_MS = 1500;
+const BOOTSTRAP_HOST_GRACE_MS = 1200;
+const BOOTSTRAP_VIEWER_GRACE_MS = 2000;
 const MAX_VIDEO_LOAD_RETRIES = 2;
+
+export interface QueueSnapshotItem {
+  videoId: string;
+  title: string;
+  channelName: string;
+  addedBy: string;
+  addedBySessionId: string;
+  status: QueueItemStatus;
+  durationSec: number;
+}
 
 export interface SyncPayload {
   videoId: string;
@@ -41,6 +58,11 @@ export interface SyncPayload {
   allowEveryoneQueue: boolean;
   allowEveryonePlayback: boolean;
   allowOthersToHost: boolean;
+  allowReplayPlayed?: boolean;
+  dimPlayedInPlaylist?: boolean;
+  continueFromPosition?: boolean;
+  /** Authoritative playlist snapshot from server (join / reconnect / sync). */
+  queue?: QueueSnapshotItem[];
 }
 
 export interface PermissionsPayload {
@@ -76,11 +98,18 @@ export class WatchApp {
   private roomSyncGraceUntil = 0;
   /** True for full bootstrapSession (join / reconnect). */
   private sessionBootstrapInProgress = false;
-  private playbackStateSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private lastVideoChangeAt = 0;
   private keepAliveStop: (() => void) | null = null;
   private networkRecoveryStop: (() => void) | null = null;
   private reconnectInFlight = false;
+  private recoveryInProgress = false;
+  private bootstrapPromise: Promise<void> | null = null;
+  /** Playlist override until Colyseus state patch catches up after reconnect. */
+  private queueSnapshot: QueueSnapshotItem[] | null = null;
+  /** Set when roomJoined / reconnected has applied server-authoritative sync. */
+  private sessionReady = false;
+  private lastSessionSyncAt = 0;
+  private lastPlaybackMessageAt = 0;
   private keyboardHandler: ((e: KeyboardEvent) => void) | null = null;
   private layoutMode: WatchLayoutMode = "desktop";
   private activeSheet: "playlist" | "search" | "viewers" | null = null;
@@ -88,6 +117,8 @@ export class WatchApp {
   private videoLoadRetries = new Map<string, number>();
   /** Suppress load/skip toasts when advancing past an unavailable video. */
   private suppressPlaybackToasts = false;
+  private autoplayUnlockMode: "muted" | "blocked" | null = null;
+  private autoplayCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(room: Room<WatchRoomState>, root: HTMLElement) {
     this.room = room;
@@ -97,7 +128,10 @@ export class WatchApp {
     this.bindStateListeners();
     this.bindConnectionHandlers();
     this.setConnectionStatus("connected");
-    void this.bootstrapSession();
+    // roomJoined / reconnected carry authoritative sync; fallback if message was missed.
+    setTimeout(() => {
+      if (!this.sessionReady) void this.bootstrapSession();
+    }, 300);
   }
 
   private canEditQueue(): boolean {
@@ -150,6 +184,15 @@ export class WatchApp {
               <div id="loading-overlay" class="player-loading hidden">
                 <div class="loading-spinner"></div>
               </div>
+              <button
+                type="button"
+                id="autoplay-unlock"
+                class="autoplay-unlock hidden"
+                aria-label="Tap to sync playback"
+              >
+                <span class="autoplay-unlock-icon">${iconHtml("play", 28, "ui-icon")}</span>
+                <span id="autoplay-unlock-label" class="autoplay-unlock-label">Tap to sync playback</span>
+              </button>
             </div>
 
             <section class="playlist-section">
@@ -280,6 +323,7 @@ export class WatchApp {
 
     this.bindKeyboardControls();
     this.bindPlayerControls();
+    this.bindAutoplayUnlock();
     this.bindLayoutObserver();
     this.bindSheetControls();
 
@@ -500,6 +544,73 @@ export class WatchApp {
     this.root.querySelectorAll(".mobile-toolbar-btn--active").forEach((btn) => {
       btn.classList.remove("mobile-toolbar-btn--active");
     });
+  }
+
+  private bindAutoplayUnlock() {
+    this.root.querySelector("#autoplay-unlock")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.unlockPlaybackFromGesture();
+    });
+  }
+
+  private showAutoplayUnlock(mode: "muted" | "blocked") {
+    if (!this.room.state.videoId || this.playerLoading) return;
+    this.autoplayUnlockMode = mode;
+    const btn = this.root.querySelector("#autoplay-unlock") as HTMLElement | null;
+    const label = this.root.querySelector("#autoplay-unlock-label") as HTMLElement | null;
+    if (!btn || !label) return;
+    label.textContent = mode === "muted" ? "Tap for sound" : "Tap to sync playback";
+    btn.classList.remove("hidden");
+  }
+
+  private hideAutoplayUnlock() {
+    this.autoplayUnlockMode = null;
+    this.root.querySelector("#autoplay-unlock")?.classList.add("hidden");
+  }
+
+  private scheduleAutoplayCheck() {
+    if (this.autoplayCheckTimer) clearTimeout(this.autoplayCheckTimer);
+    this.autoplayCheckTimer = setTimeout(() => {
+      this.autoplayCheckTimer = null;
+      this.checkAutoplayBlocked();
+    }, 1500);
+  }
+
+  private checkAutoplayBlocked() {
+    if (!this.player || !this.room.state.videoId || this.playerLoading || this.roomSyncInProgress) {
+      return;
+    }
+    if (!this.room.state.isPlaying) {
+      this.hideAutoplayUnlock();
+      return;
+    }
+    if (this.player.isPlaying()) {
+      if (this.player.isPlaybackMuted()) {
+        this.showAutoplayUnlock("muted");
+      } else {
+        this.hideAutoplayUnlock();
+      }
+      return;
+    }
+    this.showAutoplayUnlock("blocked");
+  }
+
+  /** User gesture unlocks browser autoplay policy in Discord Activities. */
+  private unlockPlaybackFromGesture() {
+    if (!this.player || !this.room.state.videoId) return;
+
+    this.hideAutoplayUnlock();
+    const roomTime = this.getRoomEffectiveTime();
+    this.player.unlockPlayback();
+
+    if (this.room.state.isPlaying) {
+      const drift = Math.abs(this.player.getCurrentTime() - roomTime);
+      if (drift > SYNC_APPLY_THRESHOLD) {
+        this.player.seek(roomTime, true);
+      }
+    }
+
+    window.setTimeout(() => this.checkAutoplayBlocked(), 600);
   }
 
   private bindPlayerControls() {
@@ -792,7 +903,16 @@ export class WatchApp {
   }
 
   /** Sync UI + playback from authoritative room state (join, reconnect, rejoin). */
-  private async bootstrapSession() {
+  private bootstrapSession(force = false): Promise<void> {
+    if (!force && this.bootstrapPromise) return this.bootstrapPromise;
+    if (force) this.bootstrapPromise = null;
+    this.bootstrapPromise = this.runBootstrapSession();
+    return this.bootstrapPromise.finally(() => {
+      this.bootstrapPromise = null;
+    });
+  }
+
+  private async runBootstrapSession() {
     this.sessionBootstrapInProgress = true;
     try {
       const isHost = this.room.state.hostSessionId === this.room.sessionId;
@@ -807,10 +927,71 @@ export class WatchApp {
       await this.applySync(this.lastSync, true);
       this.pendingForceSync = true;
       safeRoomSend(this.room, "syncRequest");
+      this.sessionReady = true;
     } finally {
       this.sessionBootstrapInProgress = false;
-      this.roomSyncGraceUntil = Date.now() + 3000;
+      this.setRoomSyncGrace(this.isHost ? BOOTSTRAP_HOST_GRACE_MS : BOOTSTRAP_VIEWER_GRACE_MS);
     }
+  }
+
+  private setRoomSyncGrace(ms?: number) {
+    const duration = ms ?? (this.isHost ? HOST_SYNC_GRACE_MS : VIEWER_SYNC_GRACE_MS);
+    this.roomSyncGraceUntil = Date.now() + duration;
+  }
+
+  private markPlaybackMessageApplied() {
+    this.lastPlaybackMessageAt = Date.now();
+  }
+
+  private shouldSkipSchemaDriftSync(): boolean {
+    return Date.now() - this.lastPlaybackMessageAt < PLAYBACK_MESSAGE_GRACE_MS;
+  }
+
+  private applyQueueFromSync(sync: SyncPayload) {
+    if (!Array.isArray(sync.queue)) return;
+    this.queueSnapshot = sync.queue.length > 0 ? sync.queue : null;
+  }
+
+  private reconcileQueueSnapshot() {
+    if (!this.queueSnapshot) return;
+    const stateLen = this.room.state.queue?.length ?? 0;
+    if (stateLen >= this.queueSnapshot.length) {
+      this.queueSnapshot = null;
+    }
+  }
+
+  private getDisplayQueueEntries(): { item: QueueSnapshotItem | QueueItem; index: number }[] {
+    const stateQueue = this.room.state.queue;
+    const stateLen = stateQueue?.length ?? 0;
+
+    if (this.queueSnapshot?.length && stateLen < this.queueSnapshot.length) {
+      return this.queueSnapshot.map((item, index) => ({ item, index }));
+    }
+
+    if (this.queueSnapshot && stateLen >= this.queueSnapshot.length) {
+      this.queueSnapshot = null;
+    }
+
+    const entries: { item: QueueItem; index: number }[] = [];
+    stateQueue?.forEach((item, index) => {
+      entries.push({ item, index });
+    });
+    return entries;
+  }
+
+  private handleSessionSync(data: { isHost: boolean; sync: SyncPayload }) {
+    this.sessionReady = true;
+    this.lastSessionSyncAt = Date.now();
+    this.setHostUI(data.isHost);
+    this.applyQueueFromSync(data.sync);
+    this.lastSync = data.sync;
+    this.refreshUI();
+    void this.applySync(data.sync, true);
+    if (!this.syncTimer) this.startSyncTimer();
+    if (!this.endCheckTimer) this.startEndDetection();
+    if (!this.controlsTimer) this.startControlsTimer();
+    this.pendingForceSync = true;
+    safeRoomSend(this.room, "syncRequest");
   }
 
   private shouldBroadcastPlayerState(): boolean {
@@ -848,7 +1029,11 @@ export class WatchApp {
   private bindConnectionHandlers() {
     configureRoomResilience(this.room);
     this.keepAliveStop = startRoomKeepAlive(this.room, () => this.requestRoomSync());
-    this.networkRecoveryStop = bindNetworkRecoveryHandlers(this.room, () => this.recoverFromDisconnect());
+    this.networkRecoveryStop = bindNetworkRecoveryHandlers(this.room, () => {
+      if (this.room.reconnection.isReconnecting) return;
+      if (!this.room.connection?.isOpen) return;
+      void this.recoverFromDisconnect();
+    });
 
     this.room.onDrop(() => {
       this.setConnectionStatus("connecting");
@@ -857,13 +1042,14 @@ export class WatchApp {
     this.room.onReconnect(() => {
       this.reconnectInFlight = false;
       this.setConnectionStatus("connected");
-      this.recoverFromDisconnect();
+      void this.recoverFromDisconnect();
     });
 
     this.room.onLeave((code) => {
       if (this.reconnectInFlight) return;
       if (this.room.reconnection.isReconnecting) return;
       setTimeout(() => {
+        if (this.reconnectInFlight) return;
         if (this.room.reconnection.isReconnecting) return;
         void this.attemptRoomRejoin(code);
       }, 1200);
@@ -880,11 +1066,24 @@ export class WatchApp {
     safeRoomSend(this.room, "syncRequest");
   }
 
-  private recoverFromDisconnect() {
-    this.ignoreRemotePlaybackUntil = 0;
-    this.reconnectInFlight = false;
-    this.setConnectionStatus("connected");
-    void this.bootstrapSession();
+  private async recoverFromDisconnect() {
+    if (this.recoveryInProgress || this.reconnectInFlight) return;
+    if (this.room.reconnection.isReconnecting) return;
+    if (!this.room.connection?.isOpen) return;
+
+    this.recoveryInProgress = true;
+    const syncAtStart = this.lastSessionSyncAt;
+    try {
+      this.ignoreRemotePlaybackUntil = 0;
+      this.reconnectInFlight = false;
+      this.setConnectionStatus("connected");
+      await waitForWatchState(this.room, 6000);
+      if (this.lastSessionSyncAt > syncAtStart) return;
+      await this.bootstrapSession(true);
+      this.scheduleAutoplayCheck();
+    } finally {
+      this.recoveryInProgress = false;
+    }
   }
 
   private async attemptRoomRejoin(code: number) {
@@ -1267,6 +1466,11 @@ export class WatchApp {
       this.clearUnavailableCheck();
       if (state === "playing") {
         this.videoLoadRetries.delete(this.room.state.videoId);
+        if (this.player?.isPlaybackMuted()) {
+          this.showAutoplayUnlock("muted");
+        } else {
+          this.hideAutoplayUnlock();
+        }
       }
     }
 
@@ -1324,15 +1528,11 @@ export class WatchApp {
 
   private bindRoomMessages() {
     this.room.onMessage("roomJoined", (data: { isHost: boolean; sync: SyncPayload }) => {
-      this.setHostUI(data.isHost);
-      this.lastSync = data.sync;
-      this.refreshUI();
-      void this.applySync(data.sync, true);
-      if (!this.syncTimer) this.startSyncTimer();
-      if (!this.endCheckTimer) this.startEndDetection();
-      if (!this.controlsTimer) this.startControlsTimer();
-      this.pendingForceSync = true;
-      safeRoomSend(this.room, "syncRequest");
+      this.handleSessionSync(data);
+    });
+
+    this.room.onMessage("reconnected", (data: { isHost: boolean; sync: SyncPayload }) => {
+      this.handleSessionSync(data);
     });
 
     this.room.onMessage("videoSkipped", (data: { reason?: string }) => {
@@ -1355,6 +1555,7 @@ export class WatchApp {
         return;
       }
       if (!this.shouldIgnoreRemotePlaybackApply()) {
+        this.markPlaybackMessageApplied();
         this.applyPlay(data.currentTime);
       }
       this.updatePlayerControls();
@@ -1373,6 +1574,7 @@ export class WatchApp {
         return;
       }
       if (!this.shouldIgnoreRemotePlaybackApply()) {
+        this.markPlaybackMessageApplied();
         this.applyPause(data.currentTime);
       }
       this.updatePlayerControls();
@@ -1387,6 +1589,7 @@ export class WatchApp {
         return;
       }
       if (!this.shouldIgnoreRemotePlaybackApply()) {
+        this.markPlaybackMessageApplied();
         this.seekTo(data.currentTime, this.room.state.isPlaying);
       }
       this.updatePlayerControls();
@@ -1403,6 +1606,7 @@ export class WatchApp {
       this.videoLoadRetries.delete(sync.videoId);
       this.ignoreRemotePlaybackUntil = 0;
       this.lastVideoChangeAt = Date.now();
+      this.markPlaybackMessageApplied();
       this.clearUnavailableCheck();
       this.lastSync = sync;
       void this.applyVideoChange(sync).finally(() => {
@@ -1413,11 +1617,13 @@ export class WatchApp {
     this.room.onMessage("sync", (sync: SyncPayload) => {
       const force = this.pendingForceSync;
       this.pendingForceSync = false;
+      this.applyQueueFromSync(sync);
       this.lastSync = sync;
       this.applySync(sync, force);
     });
 
     this.room.onMessage("forceSync", (sync: SyncPayload) => {
+      this.applyQueueFromSync(sync);
       this.lastSync = sync;
       this.applySync(sync, true);
     });
@@ -1453,12 +1659,22 @@ export class WatchApp {
       callbacks.onRemove("members", () => this.renderMembers());
     }
     if (this.room.state.queue) {
-      callbacks.onAdd("queue", () => this.renderQueue());
-      callbacks.onRemove("queue", () => this.renderQueue());
-      callbacks.onChange("queue", () => this.renderQueue());
+      callbacks.onAdd("queue", () => {
+        this.reconcileQueueSnapshot();
+        this.renderQueue();
+      });
+      callbacks.onRemove("queue", () => {
+        this.reconcileQueueSnapshot();
+        this.renderQueue();
+      });
+      callbacks.onChange("queue", () => {
+        this.reconcileQueueSnapshot();
+        this.renderQueue();
+      });
     }
 
     callbacks.onChange(this.room.state, () => {
+      this.reconcileQueueSnapshot();
       this.renderQueue();
       this.renderVideoTitle();
       this.updatePermissionUI();
@@ -1468,7 +1684,6 @@ export class WatchApp {
   }
 
   private bindPlaybackStateListeners(callbacks: ReturnType<typeof Callbacks.get>) {
-    const schedule = () => this.schedulePlaybackStateSync();
     const state = this.room.state;
     const listen = callbacks.listen.bind(callbacks) as (
       instance: WatchRoomState,
@@ -1477,39 +1692,11 @@ export class WatchApp {
       immediate?: boolean
     ) => () => void;
 
-    listen(state, "isPlaying", schedule, false);
-    listen(state, "currentTime", schedule, false);
-    listen(state, "lastUpdatedAt", schedule, false);
+    // Playback position comes from play/pause/seek messages + drift timer — not schema listeners.
     listen(state, "videoDurationSec", () => {
       this.updatePlayerControls();
       this.renderQueue();
     }, false);
-  }
-
-  private schedulePlaybackStateSync() {
-    if (this.playbackStateSyncTimer) clearTimeout(this.playbackStateSyncTimer);
-    this.playbackStateSyncTimer = setTimeout(() => {
-      this.playbackStateSyncTimer = null;
-      if (!this.player || !this.lastSync || this.roomSyncInProgress || this.playerLoading) return;
-      if (this.shouldIgnoreRemotePlaybackApply()) return;
-
-      const roomTime = this.getRoomEffectiveTime();
-      const localTime = this.player.getCurrentTime();
-      const drift = Math.abs(localTime - roomTime);
-      const roomPlaying = this.room.state.isPlaying;
-      const playingMismatch = this.player.isPlaying() !== roomPlaying;
-
-      if (drift > SYNC_APPLY_THRESHOLD || playingMismatch) {
-        void this.applySync(
-          {
-            ...this.buildSyncFromRoom(),
-            currentTime: roomTime,
-            isPlaying: roomPlaying,
-          },
-          drift > 1.5 || playingMismatch
-        );
-      }
-    }, 120);
   }
 
   private refreshUI() {
@@ -1566,7 +1753,7 @@ export class WatchApp {
     this.updateHostMenuAvatar();
   }
 
-  private resolveQueueMember(item: QueueItem): Member | null {
+  private resolveQueueMember(item: QueueSnapshotItem | QueueItem): Member | null {
     const members = this.room.state.members;
     if (!members) return null;
 
@@ -1581,7 +1768,7 @@ export class WatchApp {
     return found;
   }
 
-  private renderQueueUserHtml(item: QueueItem): string {
+  private renderQueueUserHtml(item: QueueSnapshotItem | QueueItem): string {
     const member = this.resolveQueueMember(item);
     const name = member?.username || item.addedBy || "Guest";
     const initial = name.charAt(0).toUpperCase();
@@ -1707,12 +1894,12 @@ export class WatchApp {
     this.openQueueMenuIndex = null;
 
     const queue = this.room.state.queue;
-    if (!queue?.forEach) return;
+    if (!queue?.forEach && !this.queueSnapshot?.length) return;
 
     let total = 0;
     let playingPos = 0;
 
-    queue.forEach((item: QueueItem, index: number) => {
+    for (const { item, index } of this.getDisplayQueueEntries()) {
       total += 1;
       if (item.status === "playing") playingPos = total;
 
@@ -1839,7 +2026,7 @@ export class WatchApp {
 
       this.bindQueueDragDrop(li, index, item.status);
       list.appendChild(li);
-    });
+    }
 
     if (prevMenuIndex !== null) {
       const row = list.querySelector(`[data-index="${prevMenuIndex}"]`);
@@ -1901,7 +2088,7 @@ export class WatchApp {
       this.renderQueue();
     } finally {
       this.roomSyncInProgress = false;
-      this.roomSyncGraceUntil = Date.now() + 2000;
+      this.setRoomSyncGrace();
     }
   }
 
@@ -1934,6 +2121,7 @@ export class WatchApp {
           onStateChange: (state, currentTime) => this.handlePlayerStateChange(state, currentTime),
           onDurationChange: (durationSec) => this.handlePlayerDurationChange(durationSec),
           onError: (code) => this.handlePlayerError(code),
+          onAutoplayBlocked: (mode) => this.showAutoplayUnlock(mode),
         });
         this.player.load(videoId, startTime, autoplay);
         await this.player.waitForReady();
@@ -2013,7 +2201,7 @@ export class WatchApp {
       this.renderQueue();
     } finally {
       this.roomSyncInProgress = false;
-      this.roomSyncGraceUntil = Date.now() + 2000;
+      this.setRoomSyncGrace();
     }
   }
 
@@ -2034,10 +2222,14 @@ export class WatchApp {
     setTimeout(() => {
       this.applyingRemotePlayback = false;
     }, STATE_BROADCAST_SUPPRESS_MS);
+    if (this.room.state.isPlaying) {
+      this.scheduleAutoplayCheck();
+    }
   }
 
   private applyPause(currentTime: number) {
     if (!this.player) return;
+    this.hideAutoplayUnlock();
     this.applyingRemotePlayback = true;
     this.withSuppressedStateBroadcast(() => {
       const drift = Math.abs(this.player!.getCurrentTime() - currentTime);
@@ -2071,6 +2263,7 @@ export class WatchApp {
     this.syncTimer = setInterval(() => {
       if (!this.player || !this.lastSync || !this.room.state.videoId) return;
       if (this.roomSyncInProgress || this.playerLoading) return;
+      if (this.isHost) return;
       if (this.shouldIgnoreRemotePlaybackApply()) return;
 
       const roomTime = this.getRoomEffectiveTime();
@@ -2079,7 +2272,14 @@ export class WatchApp {
       const roomPlaying = this.room.state.isPlaying;
       const playingMismatch = this.player.isPlaying() !== roomPlaying;
 
+      if (this.shouldSkipSchemaDriftSync() && drift <= SYNC_APPLY_THRESHOLD && !playingMismatch) {
+        return;
+      }
+
       if (drift > SYNC_APPLY_THRESHOLD || playingMismatch) {
+        if (drift > 2) {
+          safeRoomSend(this.room, "syncReport", { currentTime: localTime });
+        }
         void this.applySync(
           {
             ...this.buildSyncFromRoom(),
@@ -2087,7 +2287,9 @@ export class WatchApp {
             isPlaying: roomPlaying,
           },
           drift > 1.5 || playingMismatch
-        );
+        ).then(() => {
+          if (playingMismatch) this.scheduleAutoplayCheck();
+        });
       }
     }, DRIFT_CHECK_INTERVAL_MS);
   }
@@ -2139,7 +2341,14 @@ export class WatchApp {
     this.clearUnavailableCheck();
     if (this.syncTimer) clearInterval(this.syncTimer);
     if (this.endCheckTimer) clearInterval(this.endCheckTimer);
-    if (this.playbackStateSyncTimer) clearTimeout(this.playbackStateSyncTimer);
+    if (this.autoplayCheckTimer) clearTimeout(this.autoplayCheckTimer);
     this.player?.destroy();
+    try {
+      if (this.room.connection?.isOpen) {
+        void this.room.leave();
+      }
+    } catch {
+      /* room already closed */
+    }
   }
 }
