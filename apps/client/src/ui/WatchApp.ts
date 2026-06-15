@@ -1523,10 +1523,16 @@ export class WatchApp {
       this.loadedVideoId = "";
       const sync = this.lastSync ?? this.buildSyncFromRoom();
       try {
-        await this.ensurePlayer(videoId, {
-          startTime: sync.currentTime,
-          autoplay: sync.isPlaying,
-        });
+        if (this.player?.reload) {
+          await this.player.reload();
+        } else {
+          this.resetPlayerInstance();
+          await this.ensurePlayer(videoId, {
+            startTime: sync.currentTime,
+            autoplay: sync.isPlaying,
+          });
+        }
+        this.loadedVideoId = videoId;
         if (sync.isPlaying) this.scheduleUnavailableCheck();
         return;
       } catch {
@@ -2322,16 +2328,32 @@ export class WatchApp {
     const container = this.root.querySelector("#yt-player") as HTMLElement;
 
     if (this.player && this.loadedVideoId === videoId) {
-      const resumeTime = options.startTime ?? this.player.getCurrentTime();
-      const shouldPlay =
-        options.autoplay !== undefined ? options.autoplay : this.player.isPlaying();
-      if (shouldPlay) {
-        this.player.play(resumeTime);
-      } else {
-        this.player.pause(resumeTime);
+      try {
+        await this.player.waitForReady();
+      } catch {
+        if (this.player.reload) {
+          await this.player.reload();
+        } else {
+          this.loadedVideoId = "";
+        }
       }
-      return;
+      if (this.player && this.loadedVideoId === videoId) {
+        const resumeTime = options.startTime ?? this.player.getCurrentTime();
+        const shouldPlay =
+          options.autoplay !== undefined ? options.autoplay : this.player.isPlaying();
+        if (shouldPlay) {
+          this.player.play(resumeTime);
+        } else {
+          this.player.pause(resumeTime);
+        }
+        return;
+      }
     }
+
+    const loadFresh = async () => {
+      this.player!.load(videoId, startTime, autoplay);
+      await this.player!.waitForReady();
+    };
 
     if (!this.player) {
       container.innerHTML = '<div id="yt-iframe-target"></div>';
@@ -2343,14 +2365,13 @@ export class WatchApp {
           onError: (code) => this.handlePlayerError(code),
           onAutoplayBlocked: (mode) => this.showAutoplayUnlock(mode),
         });
-        this.player.load(videoId, startTime, autoplay);
-        await this.player.waitForReady();
+        await loadFresh();
         this.loadedVideoId = videoId;
         this.prefetchVideoDuration(videoId);
         this.reportDurationToServer();
         if (autoplay) this.scheduleUnavailableCheck();
       } catch {
-        this.loadedVideoId = "";
+        this.resetPlayerInstance();
         void this.retryPlaybackOrDeferUnavailable();
       } finally {
         this.setPlayerLoading(false);
@@ -2360,18 +2381,37 @@ export class WatchApp {
 
     this.setPlayerLoading(true);
     try {
-      this.player.load(videoId, startTime, autoplay);
-      await this.player.waitForReady();
+      await loadFresh();
       this.loadedVideoId = videoId;
       this.prefetchVideoDuration(videoId);
       this.reportDurationToServer();
       if (autoplay) this.scheduleUnavailableCheck();
     } catch {
-      this.loadedVideoId = "";
+      if (this.player?.reload) {
+        try {
+          await this.player.reload();
+          this.loadedVideoId = videoId;
+          return;
+        } catch {
+          /* fall through */
+        }
+      }
+      this.resetPlayerInstance();
       void this.retryPlaybackOrDeferUnavailable();
     } finally {
       this.setPlayerLoading(false);
     }
+  }
+
+  private resetPlayerInstance(): void {
+    this.loadedVideoId = "";
+    try {
+      this.player?.destroy();
+    } catch {
+      /* ignore */
+    }
+    this.player = null;
+    this.ensurePlayerTask = null;
   }
 
   private async applySync(sync: SyncPayload, force: boolean) {

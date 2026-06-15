@@ -32,6 +32,7 @@ export interface VideoPlayer {
   unlockPlayback(): void;
   setPlaybackRate(_rate: number): void;
   waitForReady(): Promise<void>;
+  reload?(): Promise<void>;
   destroy(): void;
 }
 
