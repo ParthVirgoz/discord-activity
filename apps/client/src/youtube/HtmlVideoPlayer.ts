@@ -301,6 +301,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
       this.srcRetryCount = 0;
       this.resetReadyPromise();
       this.lastState = "unstarted";
+      this.video.currentTime = 0;
       this.assignMediaSource(videoId);
       this.video.load();
       this.scheduleLoadTimeout();

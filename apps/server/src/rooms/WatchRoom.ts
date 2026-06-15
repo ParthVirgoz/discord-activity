@@ -434,15 +434,24 @@ export class WatchRoom extends Room {
     this.markPlayingAsUnavailable();
 
     const skippedVideoId = this.state.videoId;
+    const skippedTitle = playing.title;
     const next = this.findNextQueuedItem(playingIdx);
     if (!next) {
       this.clearNowPlaying();
-      this.broadcast("videoSkipped", { reason: "unavailable", videoId: skippedVideoId });
+      this.broadcast("videoSkipped", {
+        reason: "unavailable",
+        videoId: skippedVideoId,
+        title: skippedTitle,
+      });
       return;
     }
 
     this.startQueueItem(next, true);
-    this.broadcast("videoSkipped", { reason: "unavailable", videoId: skippedVideoId });
+    this.broadcast("videoSkipped", {
+      reason: "unavailable",
+      videoId: skippedVideoId,
+      title: skippedTitle,
+    });
   }
 
   private maybeAdvanceAtEnd(): void {
@@ -795,9 +804,6 @@ export class WatchRoom extends Room {
     }
 
     this.pruneDisconnectedMembers();
-    if (this.state.members.size === 0 && this.hasWatchContent()) {
-      this.resetWatchState();
-    }
 
     const auth = client.auth as { id?: string; username?: string; avatar?: string } | undefined;
     const discordId = typeof auth?.id === "string" ? auth.id : client.sessionId;
