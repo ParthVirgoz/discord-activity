@@ -3,10 +3,29 @@ import { Callbacks } from "@colyseus/sdk";
 import type { GameRoomState, GamePhase } from "../schema.js";
 import { configureRoomResilience, startRoomKeepAlive, bindNetworkRecoveryHandlers } from "../utils/roomConnection.js";
 
+type RevealOption = {
+  id: string;
+  text: string;
+  isTruth: boolean;
+  authorSessionId: string | null;
+  votes: number;
+};
+
+const MIN_PLAYERS = 3;
+
 export class GameApp {
   private room: Room<GameRoomState>;
   private root: HTMLElement;
   private destroyed = false;
+  private lastReveal: {
+    truthOptionId: string;
+    options: RevealOption[];
+    roundGains: Record<string, number>;
+  } | null = null;
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  private submittedThisRound = false;
+  private myAnswerText = "";
+  private votedThisRound = false;
 
   constructor(room: Room<GameRoomState>, root: HTMLElement) {
     this.room = room;
@@ -17,7 +36,15 @@ export class GameApp {
     bindNetworkRecoveryHandlers(room, () => this.renderAll());
     this.bindMessages();
     this.bindStateListeners();
+    this.tickTimer = setInterval(() => this.renderTimer(), 1000);
     this.renderAll();
+  }
+
+  private resetRoundLocal() {
+    this.submittedThisRound = false;
+    this.myAnswerText = "";
+    this.votedThisRound = false;
+    this.lastReveal = null;
   }
 
   private renderShell() {
@@ -25,53 +52,64 @@ export class GameApp {
       <div class="game-app">
         <header class="game-header">
           <div class="game-brand">
-            <span class="game-logo">⭕</span>
+            <span class="game-logo">🎭</span>
             <div>
-              <h1 class="game-title">Tic-Tac-Toe</h1>
-              <p class="game-subtitle">Voice channel party game</p>
+              <h1 class="game-title">Bluff Party</h1>
+              <p class="game-subtitle">Find the truth. Fool your friends.</p>
             </div>
           </div>
-          <span id="connection-badge" class="connection-badge connected">Connected</span>
+          <div class="header-meta">
+            <span id="round-badge" class="round-badge">Lobby</span>
+            <span id="connection-badge" class="connection-badge connected">Connected</span>
+          </div>
         </header>
         <main class="game-main">
-          <section class="game-board-section">
+          <section class="game-stage">
             <p id="status-line" class="status-line">Connecting…</p>
-            <div id="game-board" class="game-board" role="grid" aria-label="Tic-tac-toe board"></div>
-            <div class="game-actions">
-              <button type="button" id="btn-rematch" class="btn btn-primary hidden">Play again</button>
-              <button type="button" id="btn-leave-seat" class="btn btn-ghost hidden">Leave seat</button>
-            </div>
+            <p id="timer-line" class="timer-line hidden"></p>
+            <div id="stage-content" class="stage-content"></div>
+            <div id="game-actions" class="game-actions"></div>
           </section>
           <aside class="game-sidebar">
-            <h2 class="sidebar-title">Players</h2>
+            <h2 class="sidebar-title">Scoreboard</h2>
+            <ol id="score-list" class="score-list"></ol>
+            <h2 class="sidebar-title sidebar-title--spaced">In voice</h2>
             <ul id="member-list" class="member-list"></ul>
-            <p class="sidebar-hint">First two players in the voice channel become X and O. Everyone else watches.</p>
+            <p class="sidebar-hint">Party game for 3–12 players — like Fibbage on Discord. Write lies, spot the truth, climb the board.</p>
           </aside>
         </main>
       </div>
     `;
-
-    this.root.querySelector("#btn-rematch")?.addEventListener("click", () => {
-      this.room.send("rematch");
-    });
-    this.root.querySelector("#btn-leave-seat")?.addEventListener("click", () => {
-      this.room.send("leaveSeat");
-    });
   }
 
   private bindMessages() {
     this.room.onMessage("roomJoined", () => this.renderAll());
     this.room.onMessage("reconnected", () => this.renderAll());
-    this.room.onMessage("gameOver", () => this.renderAll());
-    this.room.onMessage("rematch", () => this.renderAll());
+    this.room.onMessage("roundStarted", () => {
+      this.resetRoundLocal();
+      this.renderAll();
+    });
+    this.room.onMessage("roundReveal", (data: {
+      truthOptionId: string;
+      options: RevealOption[];
+      roundGains: Record<string, number>;
+    }) => {
+      this.lastReveal = data;
+      this.renderAll();
+    });
+    this.room.onMessage("gameEnded", () => this.renderAll());
+    this.room.onMessage("backToLobby", () => {
+      this.resetRoundLocal();
+      this.renderAll();
+    });
 
     this.room.onLeave(() => {
       if (this.destroyed) return;
-      this.setConnectionStatus("disconnected");
+      if (this.tickTimer) clearInterval(this.tickTimer);
       this.root.innerHTML = `
         <div class="error-screen">
-          <p>Disconnected from the game room.</p>
-          <p class="muted">Re-open the Activity from your voice channel to play again.</p>
+          <p>Disconnected from the game.</p>
+          <p class="muted">Re-open the Activity from your voice channel.</p>
         </div>
       `;
     });
@@ -86,138 +124,278 @@ export class GameApp {
     callbacks.onChange(this.room.state, () => this.renderAll());
   }
 
-  private mySymbol(): "" | "X" | "O" {
-    const id = this.room.sessionId;
-    if (id === this.room.state.playerXSessionId) return "X";
-    if (id === this.room.state.playerOSessionId) return "O";
-    return "";
+  private isHost(): boolean {
+    return this.room.state.hostSessionId === this.room.sessionId;
   }
 
   private renderAll() {
     if (this.destroyed) return;
+    this.renderRoundBadge();
     this.renderStatus();
-    this.renderBoard();
-    this.renderMembers();
+    this.renderTimer();
+    this.renderStage();
     this.renderActions();
+    this.renderScores();
+    this.renderMembers();
+  }
+
+  private renderRoundBadge() {
+    const el = this.root.querySelector("#round-badge");
+    if (!el) return;
+    const s = this.room.state;
+    if (s.phase === "lobby") el.textContent = "Lobby";
+    else if (s.phase === "ended") el.textContent = "Final";
+    else el.textContent = `Round ${s.round}/${s.maxRounds}`;
   }
 
   private renderStatus() {
     const el = this.root.querySelector("#status-line");
     if (!el) return;
-
     const s = this.room.state;
-    const me = this.mySymbol();
-    const phase = s.phase as GamePhase;
+    const count = s.members?.size ?? 0;
 
-    if (phase === "waiting") {
-      if (!s.playerXSessionId || !s.playerOSessionId) {
-        el.textContent = me
-          ? "Waiting for an opponent to join the voice channel…"
-          : "Waiting for two players — open the Activity in voice to play.";
-      } else {
-        el.textContent = "Starting…";
-      }
-      return;
-    }
-
-    if (phase === "finished") {
-      if (s.winner === "draw") {
-        el.textContent = "Draw! Tap Play again for a rematch.";
-      } else if (me && s.winner === me) {
-        el.textContent = "You win! 🎉";
-      } else if (me) {
-        el.textContent = "You lose. Better luck next round!";
-      } else {
-        el.textContent = `${s.winner} wins!`;
-      }
-      return;
-    }
-
-    if (me) {
-      el.textContent =
-        s.currentTurnSessionId === this.room.sessionId
-          ? "Your turn — pick a square"
-          : "Opponent's turn…";
-    } else {
-      const turnSymbol =
-        s.currentTurnSessionId === s.playerXSessionId
-          ? "X"
-          : s.currentTurnSessionId === s.playerOSessionId
-            ? "O"
-            : "?";
-      el.textContent = `${turnSymbol}'s turn`;
+    switch (s.phase as GamePhase) {
+      case "lobby":
+        el.textContent =
+          count < MIN_PLAYERS
+            ? `Need ${MIN_PLAYERS - count} more player${MIN_PLAYERS - count === 1 ? "" : "s"} (${count}/${MIN_PLAYERS})`
+            : this.isHost()
+              ? "Ready! Start when everyone's in voice."
+              : "Waiting for the host to start…";
+        break;
+      case "submit":
+        el.textContent = "Write a convincing lie — fool the room!";
+        break;
+      case "vote":
+        el.textContent = "Pick the real answer (+2). Earn +1 for each vote on your lie.";
+        break;
+      case "reveal":
+        el.textContent = "Round results";
+        break;
+      case "ended":
+        el.textContent = "Game over!";
+        break;
     }
   }
 
-  private renderBoard() {
-    const boardEl = this.root.querySelector("#game-board");
-    if (!boardEl) return;
-
+  private renderTimer() {
+    const el = this.root.querySelector("#timer-line");
+    if (!el) return;
     const s = this.room.state;
-    const me = this.mySymbol();
-    const myTurn = s.phase === "playing" && s.currentTurnSessionId === this.room.sessionId;
-
-    boardEl.innerHTML = "";
-    for (let i = 0; i < 9; i++) {
-      const cell = s.board[i] ?? "";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cell" + (cell ? ` cell--${cell.toLowerCase()}` : "");
-      btn.setAttribute("role", "gridcell");
-      btn.setAttribute("aria-label", cell ? `Square ${i + 1}, ${cell}` : `Square ${i + 1}, empty`);
-      btn.textContent = cell;
-      btn.disabled = !me || !myTurn || !!cell || s.phase !== "playing";
-      btn.addEventListener("click", () => {
-        if (!btn.disabled) this.room.send("placeMark", { index: i });
-      });
-      boardEl.appendChild(btn);
+    if ((s.phase !== "submit" && s.phase !== "vote") || !s.phaseEndsAt) {
+      el.classList.add("hidden");
+      return;
     }
+    const sec = Math.max(0, Math.ceil((s.phaseEndsAt - Date.now()) / 1000));
+    el.textContent = sec > 0 ? `${sec}s left` : "Time's up…";
+    el.classList.remove("hidden");
+  }
+
+  private renderStage() {
+    const stage = this.root.querySelector("#stage-content");
+    if (!stage) return;
+    const s = this.room.state;
+
+    switch (s.phase as GamePhase) {
+      case "lobby":
+      case "ended":
+        stage.innerHTML = this.renderLobbyCard();
+        break;
+      case "submit":
+        stage.innerHTML = this.renderSubmitCard();
+        this.bindSubmitForm();
+        break;
+      case "vote":
+        stage.innerHTML = this.renderVoteCard();
+        this.bindVoteButtons();
+        break;
+      case "reveal":
+        stage.innerHTML = this.renderRevealCard();
+        break;
+    }
+  }
+
+  private renderLobbyCard(): string {
+    const s = this.room.state;
+    if (s.phase === "ended") {
+      const winner = this.getSortedScores()[0];
+      return `
+        <div class="prompt-card prompt-card--celebrate">
+          <p class="prompt-label">🏆 Winner</p>
+          <p class="prompt-text">${winner ? this.escapeHtml(winner.username) : "Everyone"}</p>
+          <p class="prompt-sub">${winner?.points ?? 0} points</p>
+        </div>`;
+    }
+    return `
+      <div class="prompt-card">
+        <p class="prompt-label">How to play</p>
+        <ol class="how-to">
+          <li>Get a fill-in-the-blank prompt</li>
+          <li>Submit a <strong>fake answer</strong> that sounds believable</li>
+          <li>Vote for the answer you think is <strong>true</strong></li>
+          <li>Score points for finding truth &amp; fooling friends</li>
+        </ol>
+      </div>`;
+  }
+
+  private renderSubmitCard(): string {
+    const s = this.room.state;
+    if (this.submittedThisRound) {
+      return `
+        <div class="prompt-card">
+          <p class="prompt-label">Fill in the blank</p>
+          <p class="prompt-text">${this.escapeHtml(s.prompt)}</p>
+        </div>
+        <p class="waiting-note">Your lie: "${this.escapeHtml(this.myAnswerText)}" — waiting for others (${s.submittedCount}/${s.members.size})</p>`;
+    }
+    return `
+      <div class="prompt-card">
+        <p class="prompt-label">Fill in the blank</p>
+        <p class="prompt-text">${this.escapeHtml(s.prompt)}</p>
+      </div>
+      <form id="submit-form" class="submit-form">
+        <input id="answer-input" class="text-input" maxlength="72" placeholder="Your convincing lie…" autocomplete="off" />
+        <button type="submit" class="btn btn-primary">Submit lie</button>
+      </form>`;
+  }
+
+  private renderVoteCard(): string {
+    const s = this.room.state;
+    let html = `<div class="prompt-card prompt-card--compact"><p class="prompt-text">${this.escapeHtml(s.prompt)}</p></div><div class="vote-grid">`;
+
+    s.options.forEach((opt) => {
+      const isMine = this.myAnswerText && opt.text === this.myAnswerText;
+      html += `
+        <button type="button" class="vote-option" data-id="${this.escapeAttr(opt.id)}" ${isMine || this.votedThisRound ? "disabled" : ""}>
+          ${this.escapeHtml(opt.text)}
+          ${isMine ? '<span class="vote-tag">Your lie</span>' : ""}
+        </button>`;
+    });
+
+    html += "</div>";
+    if (this.votedThisRound) {
+      html += `<p class="waiting-note">Vote locked (${s.votedCount}/${s.members.size})…</p>`;
+    }
+    return html;
+  }
+
+  private renderRevealCard(): string {
+    if (!this.lastReveal) return `<p class="waiting-note">Tallying votes…</p>`;
+
+    const { options, truthOptionId, roundGains } = this.lastReveal;
+    const myGain = roundGains[this.room.sessionId] ?? 0;
+
+    let html = `<div class="reveal-list">`;
+    for (const opt of options) {
+      const isTruth = opt.id === truthOptionId;
+      const author =
+        opt.authorSessionId && this.room.state.members.get(opt.authorSessionId)?.username;
+      html += `
+        <div class="reveal-row${isTruth ? " reveal-row--truth" : ""}">
+          <p class="reveal-text">${this.escapeHtml(opt.text)}</p>
+          <div class="reveal-meta">
+            ${isTruth ? '<span class="reveal-badge reveal-badge--truth">TRUTH</span>' : author ? `<span class="reveal-badge">${this.escapeHtml(author)}</span>` : '<span class="reveal-badge">Decoy</span>'}
+            <span class="reveal-votes">${opt.votes} vote${opt.votes === 1 ? "" : "s"}</span>
+          </div>
+        </div>`;
+    }
+    html += `</div><p class="round-gain">${myGain > 0 ? `+${myGain} points this round!` : "No points this round."}</p>`;
+    return html;
+  }
+
+  private bindSubmitForm() {
+    const form = this.root.querySelector("#submit-form");
+    if (!form || this.submittedThisRound) return;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const input = this.root.querySelector("#answer-input") as HTMLInputElement | null;
+      const text = input?.value.trim();
+      if (!text || text.length < 2) return;
+      this.submittedThisRound = true;
+      this.myAnswerText = text;
+      this.room.send("submitAnswer", { text });
+      this.renderAll();
+    });
+  }
+
+  private bindVoteButtons() {
+    if (this.votedThisRound) return;
+    this.root.querySelectorAll(".vote-option").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = (btn as HTMLElement).dataset.id;
+        if (!id) return;
+        this.votedThisRound = true;
+        this.room.send("vote", { optionId: id });
+        this.renderAll();
+      });
+    });
+  }
+
+  private renderActions() {
+    const actions = this.root.querySelector("#game-actions");
+    if (!actions) return;
+    const s = this.room.state;
+
+    if (s.phase === "lobby" && this.isHost() && (s.members?.size ?? 0) >= MIN_PLAYERS) {
+      actions.innerHTML = `<button type="button" id="btn-start" class="btn btn-primary btn-lg">Start game</button>`;
+      actions.querySelector("#btn-start")?.addEventListener("click", () => this.room.send("startGame"));
+      return;
+    }
+
+    if (s.phase === "ended" && this.isHost()) {
+      actions.innerHTML = `<button type="button" id="btn-again" class="btn btn-primary btn-lg">Play again</button>`;
+      actions.querySelector("#btn-again")?.addEventListener("click", () => this.room.send("playAgain"));
+      return;
+    }
+
+    actions.innerHTML = "";
+  }
+
+  private getSortedScores() {
+    const rows: { sessionId: string; username: string; points: number }[] = [];
+    this.room.state.scores?.forEach((score, sessionId) => {
+      if (!this.room.state.members.has(sessionId)) return;
+      rows.push({
+        sessionId,
+        username: this.room.state.members.get(sessionId)?.username ?? "Player",
+        points: score.points,
+      });
+    });
+    return rows.sort((a, b) => b.points - a.points);
+  }
+
+  private renderScores() {
+    const list = this.root.querySelector("#score-list");
+    if (!list) return;
+    list.innerHTML = this.getSortedScores()
+      .map(
+        (row, i) => `
+      <li class="score-row${row.sessionId === this.room.sessionId ? " score-row--me" : ""}">
+        <span class="score-rank">${i + 1}</span>
+        <span class="score-name">${this.escapeHtml(row.username)}</span>
+        <span class="score-pts">${row.points}</span>
+      </li>`
+      )
+      .join("");
   }
 
   private renderMembers() {
     const list = this.root.querySelector("#member-list");
     if (!list) return;
-
-    const s = this.room.state;
     list.innerHTML = "";
-
-    s.members.forEach((member, sessionId) => {
+    this.room.state.members.forEach((member, sessionId) => {
       const li = document.createElement("li");
       li.className = "member-row" + (sessionId === this.room.sessionId ? " member-row--me" : "");
-
-      let role = "Spectator";
-      if (sessionId === s.playerXSessionId) role = "X";
-      if (sessionId === s.playerOSessionId) role = "O";
-
+      const host = sessionId === this.room.state.hostSessionId;
       const avatar = member.avatarUrl
         ? `<img class="member-avatar" src="${this.escapeAttr(member.avatarUrl)}" alt="" />`
         : `<span class="member-avatar member-avatar--fallback">${this.escapeHtml(member.username.charAt(0).toUpperCase())}</span>`;
-
       li.innerHTML = `
         ${avatar}
         <span class="member-name">${this.escapeHtml(member.username)}${sessionId === this.room.sessionId ? " (you)" : ""}</span>
-        <span class="member-role member-role--${role.toLowerCase()}">${role}</span>
-      `;
+        ${host ? '<span class="host-badge">Host</span>' : ""}`;
       list.appendChild(li);
     });
-  }
-
-  private renderActions() {
-    const rematch = this.root.querySelector("#btn-rematch");
-    const leaveSeat = this.root.querySelector("#btn-leave-seat");
-    const me = this.mySymbol();
-    const finished = this.room.state.phase === "finished";
-
-    rematch?.classList.toggle("hidden", !(me && finished));
-    leaveSeat?.classList.toggle("hidden", !me);
-  }
-
-  private setConnectionStatus(state: "connected" | "connecting" | "disconnected") {
-    const badge = this.root.querySelector("#connection-badge") as HTMLElement | null;
-    if (!badge) return;
-    badge.className = `connection-badge ${state}`;
-    badge.textContent =
-      state === "connected" ? "Connected" : state === "connecting" ? "Connecting…" : "Disconnected";
   }
 
   private escapeHtml(text: string): string {
@@ -232,5 +410,6 @@ export class GameApp {
 
   destroy() {
     this.destroyed = true;
+    if (this.tickTimer) clearInterval(this.tickTimer);
   }
 }

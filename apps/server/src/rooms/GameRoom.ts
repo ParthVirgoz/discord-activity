@@ -2,8 +2,17 @@ import { JWT } from "@colyseus/auth";
 import { Room, Client, CloseCode } from "colyseus";
 import { Schema, MapSchema, ArraySchema, type } from "@colyseus/schema";
 import { isValidChannelId, sanitizeUsername } from "../utils/validation";
+import {
+  BLUFF_PROMPTS,
+  DECOY_ANSWERS,
+  MIN_PLAYERS,
+  MAX_ROUNDS,
+  SUBMIT_SECONDS,
+  VOTE_SECONDS,
+  REVEAL_SECONDS,
+} from "./bluffPrompts";
 
-export type GamePhase = "waiting" | "playing" | "finished";
+export type GamePhase = "lobby" | "submit" | "vote" | "reveal" | "ended";
 
 export class Member extends Schema {
   @type("string") username = "";
@@ -11,35 +20,58 @@ export class Member extends Schema {
   @type("string") discordId = "";
 }
 
-export class GameRoomState extends Schema {
-  @type({ map: Member }) members = new MapSchema<Member>();
-  @type(["string"]) board = new ArraySchema<string>();
-  @type("string") phase: GamePhase = "waiting";
-  @type("string") currentTurnSessionId = "";
-  @type("string") playerXSessionId = "";
-  @type("string") playerOSessionId = "";
-  /** "", "X", "O", or "draw" */
-  @type("string") winner = "";
-  @type("string") channelId = "";
+export class VoteOption extends Schema {
+  @type("string") id = "";
+  @type("string") text = "";
 }
 
-const WIN_LINES = [
-  [0, 1, 2],
-  [3, 4, 5],
-  [6, 7, 8],
-  [0, 3, 6],
-  [1, 4, 7],
-  [2, 5, 8],
-  [0, 4, 8],
-  [2, 4, 6],
-];
+export class PlayerScore extends Schema {
+  @type("number") points = 0;
+}
+
+export class GameRoomState extends Schema {
+  @type({ map: Member }) members = new MapSchema<Member>();
+  @type("string") phase: GamePhase = "lobby";
+  @type("string") hostSessionId = "";
+  @type("number") round = 0;
+  @type("number") maxRounds = MAX_ROUNDS;
+  @type("string") prompt = "";
+  @type({ array: VoteOption }) options = new ArraySchema<VoteOption>();
+  @type({ map: PlayerScore }) scores = new MapSchema<PlayerScore>();
+  @type("number") submittedCount = 0;
+  @type("number") votedCount = 0;
+  @type("number") phaseEndsAt = 0;
+  @type("string") channelId = "";
+  @type("string") truthOptionId = "";
+}
+
+function sanitizeAnswer(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.trim().replace(/\s+/g, " ").slice(0, 72);
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
 
 export class GameRoom extends Room {
   state = new GameRoomState();
-  maxClients = 25;
+  maxClients = 12;
 
   private channelId = "";
   private joinedAt = new Map<string, number>();
+  private realAnswer = "";
+  private submissions = new Map<string, string>();
+  private votes = new Map<string, string>();
+  private optionAuthors = new Map<string, string>();
+  private usedPrompts = new Set<number>();
+  private phaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private optionCounter = 0;
 
   static onAuth(token: string) {
     return JWT.verify(token);
@@ -52,19 +84,15 @@ export class GameRoom extends Room {
     this.channelId = options.channelId!;
     this.state.channelId = this.channelId;
     this.autoDispose = false;
-    this.resetBoard();
 
-    this.onMessage("placeMark", (client, msg: { index?: number }) => {
-      this.handlePlaceMark(client, msg?.index);
+    this.onMessage("startGame", (client) => this.handleStartGame(client));
+    this.onMessage("submitAnswer", (client, msg: { text?: string }) => {
+      this.handleSubmitAnswer(client, msg?.text);
     });
-
-    this.onMessage("rematch", (client) => {
-      this.handleRematch(client);
+    this.onMessage("vote", (client, msg: { optionId?: string }) => {
+      this.handleVote(client, msg?.optionId);
     });
-
-    this.onMessage("leaveSeat", (client) => {
-      this.handleLeaveSeat(client);
-    });
+    this.onMessage("playAgain", (client) => this.handlePlayAgain(client));
   }
 
   onJoin(client: Client, options: { channelId?: string }) {
@@ -84,8 +112,7 @@ export class GameRoom extends Room {
       }
     });
     for (const sessionId of staleSessions) {
-      this.state.members.delete(sessionId);
-      this.joinedAt.delete(sessionId);
+      this.removePlayer(sessionId);
     }
 
     const member = new Member();
@@ -98,171 +125,312 @@ export class GameRoom extends Room {
     this.state.members.set(client.sessionId, member);
     this.joinedAt.set(client.sessionId, Date.now());
 
-    this.syncPlayerSeats();
-    client.send("roomJoined", this.buildSnapshot(client.sessionId));
+    if (!this.state.hostSessionId || !this.state.members.has(this.state.hostSessionId)) {
+      this.state.hostSessionId = client.sessionId;
+    }
+
+    if (!this.state.scores.has(client.sessionId)) {
+      const score = new PlayerScore();
+      score.points = 0;
+      this.state.scores.set(client.sessionId, score);
+    }
+
+    client.send("roomJoined", { sessionId: client.sessionId, isHost: this.isHost(client) });
   }
 
   async onLeave(client: Client, code: number) {
-    const sessionId = client.sessionId;
-
     if (code !== CloseCode.CONSENTED) {
       try {
         await this.allowReconnection(client, 120);
-        client.send("reconnected", this.buildSnapshot(client.sessionId));
+        client.send("reconnected", { sessionId: client.sessionId, isHost: this.isHost(client) });
         return;
       } catch {
         /* disconnected */
       }
     }
 
-    this.state.members.delete(sessionId);
-    this.joinedAt.delete(sessionId);
-
-    if (sessionId === this.state.playerXSessionId) {
-      this.state.playerXSessionId = "";
-    }
-    if (sessionId === this.state.playerOSessionId) {
-      this.state.playerOSessionId = "";
-    }
-
-    this.syncPlayerSeats();
+    this.removePlayer(client.sessionId);
 
     if (this.state.members.size === 0) {
+      this.clearPhaseTimer();
       this.disconnect();
+      return;
+    }
+
+    if (this.state.hostSessionId === client.sessionId) {
+      this.state.hostSessionId = this.orderedSessions()[0] ?? "";
+    }
+
+    if (this.state.phase !== "lobby" && this.state.members.size < MIN_PLAYERS) {
+      this.endToLobby("Not enough players — back to lobby.");
+    } else if (this.state.phase === "submit") {
+      this.tryAdvanceFromSubmit();
+    } else if (this.state.phase === "vote") {
+      this.tryAdvanceFromVote();
     }
   }
 
-  private buildSnapshot(forSessionId: string) {
-    return {
-      sessionId: forSessionId,
-      symbol: this.symbolFor(forSessionId),
-      phase: this.state.phase,
-      winner: this.state.winner,
-    };
+  private removePlayer(sessionId: string) {
+    this.state.members.delete(sessionId);
+    this.joinedAt.delete(sessionId);
+    this.submissions.delete(sessionId);
+    this.votes.delete(sessionId);
+    this.state.scores.delete(sessionId);
   }
 
-  private symbolFor(sessionId: string): "" | "X" | "O" {
-    if (sessionId === this.state.playerXSessionId) return "X";
-    if (sessionId === this.state.playerOSessionId) return "O";
-    return "";
+  private isHost(client: Client): boolean {
+    return this.state.hostSessionId === client.sessionId;
   }
 
   private orderedSessions(): string[] {
     return [...this.joinedAt.entries()]
       .sort((a, b) => a[1] - b[1])
-      .map(([sessionId]) => sessionId)
-      .filter((sessionId) => this.state.members.has(sessionId));
+      .map(([id]) => id)
+      .filter((id) => this.state.members.has(id));
   }
 
-  private syncPlayerSeats() {
-    const sessions = this.orderedSessions();
+  private handleStartGame(client: Client) {
+    if (!this.isHost(client)) return;
+    if (this.state.phase !== "lobby" && this.state.phase !== "ended") return;
+    if (this.state.members.size < MIN_PLAYERS) return;
 
-    if (this.state.playerXSessionId && !this.state.members.has(this.state.playerXSessionId)) {
-      this.state.playerXSessionId = "";
-    }
-    if (this.state.playerOSessionId && !this.state.members.has(this.state.playerOSessionId)) {
-      this.state.playerOSessionId = "";
+    this.usedPrompts.clear();
+    this.state.round = 0;
+    this.state.scores.forEach((s) => {
+      s.points = 0;
+    });
+    this.startRound();
+  }
+
+  private handlePlayAgain(client: Client) {
+    if (!this.isHost(client)) return;
+    if (this.state.phase !== "ended") return;
+    this.state.phase = "lobby";
+    this.state.prompt = "";
+    this.state.truthOptionId = "";
+    this.clearOptions();
+    this.broadcast("backToLobby", {});
+  }
+
+  private startRound() {
+    this.clearPhaseTimer();
+    this.submissions.clear();
+    this.votes.clear();
+    this.optionAuthors.clear();
+    this.clearOptions();
+    this.state.truthOptionId = "";
+    this.state.submittedCount = 0;
+    this.state.votedCount = 0;
+
+    this.state.round += 1;
+    if (this.state.round > this.state.maxRounds) {
+      this.state.phase = "ended";
+      this.state.phaseEndsAt = 0;
+      this.broadcast("gameEnded", { scores: this.buildScoreboard() });
+      return;
     }
 
-    if (!this.state.playerXSessionId && sessions[0]) {
-      this.state.playerXSessionId = sessions[0];
+    const promptIndex = this.pickPromptIndex();
+    const entry = BLUFF_PROMPTS[promptIndex];
+    this.realAnswer = entry.answer;
+    this.state.prompt = entry.prompt;
+    this.state.phase = "submit";
+    this.state.phaseEndsAt = Date.now() + SUBMIT_SECONDS * 1000;
+
+    this.phaseTimer = setTimeout(() => this.beginVoting(), SUBMIT_SECONDS * 1000);
+    this.broadcast("roundStarted", { round: this.state.round });
+  }
+
+  private pickPromptIndex(): number {
+    const available = BLUFF_PROMPTS.map((_, i) => i).filter((i) => !this.usedPrompts.has(i));
+    const pool = available.length > 0 ? available : BLUFF_PROMPTS.map((_, i) => i);
+    if (available.length === 0) this.usedPrompts.clear();
+    const index = pool[Math.floor(Math.random() * pool.length)];
+    this.usedPrompts.add(index);
+    return index;
+  }
+
+  private handleSubmitAnswer(client: Client, text?: unknown) {
+    if (this.state.phase !== "submit") return;
+    if (!this.state.members.has(client.sessionId)) return;
+    if (this.submissions.has(client.sessionId)) return;
+
+    const answer = sanitizeAnswer(text);
+    if (answer.length < 2) return;
+    if (answer.toLowerCase() === this.realAnswer.toLowerCase()) return;
+
+    this.submissions.set(client.sessionId, answer);
+    this.state.submittedCount = this.submissions.size;
+    this.tryAdvanceFromSubmit();
+  }
+
+  private tryAdvanceFromSubmit() {
+    if (this.state.phase !== "submit") return;
+    const active = this.orderedSessions();
+    if (this.submissions.size >= active.length && active.length >= MIN_PLAYERS) {
+      this.beginVoting();
     }
-    if (!this.state.playerOSessionId) {
-      const oSession = sessions.find((s) => s !== this.state.playerXSessionId);
-      if (oSession) this.state.playerOSessionId = oSession;
+  }
+
+  private beginVoting() {
+    if (this.state.phase !== "submit") return;
+    this.clearPhaseTimer();
+
+    const entries: { id: string; text: string; author: string }[] = [];
+    const addEntry = (text: string, author: string) => {
+      const id = `opt_${++this.optionCounter}`;
+      entries.push({ id, text, author });
+      return id;
+    };
+
+    addEntry(this.realAnswer, "__truth__");
+
+    for (const [sessionId, text] of this.submissions) {
+      if (!this.state.members.has(sessionId)) continue;
+      addEntry(text, sessionId);
     }
 
-    if (this.state.playerXSessionId && this.state.playerOSessionId) {
-      if (this.state.phase === "waiting") {
-        this.startNewRound();
+    const decoys = shuffle(DECOY_ANSWERS);
+    while (entries.length < Math.max(4, this.state.members.size + 1) && decoys.length > 0) {
+      const decoy = decoys.pop()!;
+      if (entries.some((e) => e.text.toLowerCase() === decoy.toLowerCase())) continue;
+      addEntry(decoy, "__decoy__");
+    }
+
+    const shuffled = shuffle(entries);
+    this.clearOptions();
+    for (const entry of shuffled) {
+      const opt = new VoteOption();
+      opt.id = entry.id;
+      opt.text = entry.text;
+      this.state.options.push(opt);
+      this.optionAuthors.set(entry.id, entry.author);
+      if (entry.author === "__truth__") {
+        this.state.truthOptionId = entry.id;
       }
-    } else {
-      this.state.phase = "waiting";
-      this.state.winner = "";
-      this.state.currentTurnSessionId = "";
-      this.resetBoard();
+    }
+
+    this.state.phase = "vote";
+    this.state.votedCount = 0;
+    this.state.phaseEndsAt = Date.now() + VOTE_SECONDS * 1000;
+    this.phaseTimer = setTimeout(() => this.revealRound(), VOTE_SECONDS * 1000);
+  }
+
+  private handleVote(client: Client, optionId?: string) {
+    if (this.state.phase !== "vote") return;
+    if (!this.state.members.has(client.sessionId)) return;
+    if (typeof optionId !== "string" || !this.optionAuthors.has(optionId)) return;
+    if (this.votes.has(client.sessionId)) return;
+
+    const author = this.optionAuthors.get(optionId);
+    if (author === client.sessionId) return;
+
+    this.votes.set(client.sessionId, optionId);
+    this.state.votedCount = this.votes.size;
+    this.tryAdvanceFromVote();
+  }
+
+  private tryAdvanceFromVote() {
+    if (this.state.phase !== "vote") return;
+    const active = this.orderedSessions();
+    if (this.votes.size >= active.length && active.length >= MIN_PLAYERS) {
+      this.revealRound();
     }
   }
 
-  private startNewRound() {
-    this.resetBoard();
-    this.state.phase = "playing";
-    this.state.winner = "";
-    this.state.currentTurnSessionId = this.state.playerXSessionId;
-  }
+  private revealRound() {
+    if (this.state.phase !== "vote") return;
+    this.clearPhaseTimer();
+    this.state.phase = "reveal";
 
-  private resetBoard() {
-    this.state.board.clear();
-    for (let i = 0; i < 9; i++) {
-      this.state.board.push("");
-    }
-  }
-
-  private handlePlaceMark(client: Client, index?: number) {
-    if (this.state.phase !== "playing") return;
-    if (client.sessionId !== this.state.currentTurnSessionId) return;
-    if (typeof index !== "number" || index < 0 || index > 8) return;
-    if (this.state.board[index]) return;
-
-    const symbol = this.symbolFor(client.sessionId);
-    if (symbol !== "X" && symbol !== "O") return;
-
-    this.state.board[index] = symbol;
-
-    const winSymbol = this.checkWinner();
-    if (winSymbol) {
-      this.state.phase = "finished";
-      this.state.winner = winSymbol;
-      this.state.currentTurnSessionId = "";
-      this.broadcast("gameOver", { winner: winSymbol });
-      return;
+    const roundGains = new Map<string, number>();
+    for (const sessionId of this.orderedSessions()) {
+      roundGains.set(sessionId, 0);
     }
 
-    if (this.state.board.every((cell) => cell !== "")) {
-      this.state.phase = "finished";
-      this.state.winner = "draw";
-      this.state.currentTurnSessionId = "";
-      this.broadcast("gameOver", { winner: "draw" });
-      return;
+    const voteCounts = new Map<string, number>();
+    for (const optionId of this.votes.values()) {
+      voteCounts.set(optionId, (voteCounts.get(optionId) ?? 0) + 1);
     }
 
-    this.state.currentTurnSessionId =
-      client.sessionId === this.state.playerXSessionId
-        ? this.state.playerOSessionId
-        : this.state.playerXSessionId;
-  }
-
-  private checkWinner(): "" | "X" | "O" {
-    for (const [a, b, c] of WIN_LINES) {
-      const v = this.state.board[a];
-      if (v && v === this.state.board[b] && v === this.state.board[c]) {
-        return v as "X" | "O";
+    for (const [voterId, optionId] of this.votes) {
+      const author = this.optionAuthors.get(optionId);
+      if (optionId === this.state.truthOptionId) {
+        roundGains.set(voterId, (roundGains.get(voterId) ?? 0) + 2);
+      } else if (author && author !== "__truth__" && author !== "__decoy__") {
+        roundGains.set(author, (roundGains.get(author) ?? 0) + 1);
       }
     }
-    return "";
-  }
 
-  private handleRematch(client: Client) {
-    const symbol = this.symbolFor(client.sessionId);
-    if (!symbol) return;
-    if (this.state.phase !== "finished") return;
-    if (!this.state.playerXSessionId || !this.state.playerOSessionId) return;
-    this.startNewRound();
-    this.broadcast("rematch", { from: client.sessionId });
-  }
-
-  private handleLeaveSeat(client: Client) {
-    if (client.sessionId === this.state.playerXSessionId) {
-      this.state.playerXSessionId = "";
-    } else if (client.sessionId === this.state.playerOSessionId) {
-      this.state.playerOSessionId = "";
-    } else {
-      return;
+    for (const [sessionId, gain] of roundGains) {
+      const score = this.state.scores.get(sessionId);
+      if (score) score.points += gain;
     }
-    this.state.phase = "waiting";
-    this.state.winner = "";
-    this.state.currentTurnSessionId = "";
-    this.resetBoard();
-    this.syncPlayerSeats();
+
+    const revealOptions = this.state.options.map((opt) => ({
+      id: opt.id,
+      text: opt.text,
+      isTruth: opt.id === this.state.truthOptionId,
+      authorSessionId:
+        this.optionAuthors.get(opt.id) === "__truth__" || this.optionAuthors.get(opt.id) === "__decoy__"
+          ? null
+          : this.optionAuthors.get(opt.id) ?? null,
+      votes: voteCounts.get(opt.id) ?? 0,
+    }));
+
+    this.broadcast("roundReveal", {
+      truthOptionId: this.state.truthOptionId,
+      realAnswer: this.realAnswer,
+      options: revealOptions,
+      roundGains: Object.fromEntries(roundGains),
+      scores: this.buildScoreboard(),
+    });
+
+    this.state.phaseEndsAt = Date.now() + REVEAL_SECONDS * 1000;
+    this.phaseTimer = setTimeout(() => {
+      if (this.state.round >= this.state.maxRounds) {
+        this.state.phase = "ended";
+        this.broadcast("gameEnded", { scores: this.buildScoreboard() });
+      } else {
+        this.startRound();
+      }
+    }, REVEAL_SECONDS * 1000);
+  }
+
+  private buildScoreboard(): { sessionId: string; username: string; points: number }[] {
+    return this.orderedSessions()
+      .map((sessionId) => ({
+        sessionId,
+        username: this.state.members.get(sessionId)?.username ?? "Player",
+        points: this.state.scores.get(sessionId)?.points ?? 0,
+      }))
+      .sort((a, b) => b.points - a.points);
+  }
+
+  private endToLobby(message: string) {
+    this.clearPhaseTimer();
+    this.state.phase = "lobby";
+    this.state.round = 0;
+    this.state.prompt = "";
+    this.state.truthOptionId = "";
+    this.clearOptions();
+    this.submissions.clear();
+    this.votes.clear();
+    this.broadcast("backToLobby", { message });
+  }
+
+  private clearOptions() {
+    this.state.options.clear();
+  }
+
+  private clearPhaseTimer() {
+    if (this.phaseTimer) {
+      clearTimeout(this.phaseTimer);
+      this.phaseTimer = null;
+    }
+  }
+
+  onDispose() {
+    this.clearPhaseTimer();
   }
 }

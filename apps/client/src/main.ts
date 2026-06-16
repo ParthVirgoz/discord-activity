@@ -38,7 +38,7 @@ function showLoading(message: string) {
   }
 
   try {
-    showLoading("Joining your voice channel game…");
+    showLoading("Joining Bluff Party…");
 
     const channelId = discordSDK.channelId;
     if (!channelId) {

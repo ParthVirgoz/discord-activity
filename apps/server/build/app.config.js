@@ -29,7 +29,7 @@ exports.default = (0, colyseus_1.defineServer)({
         app.use(securityHeaders_1.securityHeaders);
         app.use(express_1.default.json({ limit: "16kb" }));
         app.get("/", (_req, res) => {
-            res.json({ ok: true, service: "discord-game" });
+            res.json({ ok: true, service: "bluff-party" });
         });
         app.get("/health", (_req, res) => {
             res.json({

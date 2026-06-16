@@ -2,27 +2,23 @@ import type { Room } from "@colyseus/sdk";
 import type { GameRoomState } from "../schema.js";
 
 export function isGameRoom(room: Room<GameRoomState>): boolean {
-  const state = room.state as GameRoomState & { players?: unknown; queue?: unknown };
-  if (state.players || state.queue) {
+  const state = room.state as GameRoomState & { board?: unknown; queue?: unknown; players?: unknown };
+  if (state.board || state.queue || state.players) {
     return false;
   }
   return state.members != null && typeof state.members.forEach === "function";
 }
 
-/** Wait until Colyseus exposes the game room schema. */
 export function waitForGameState(room: Room<GameRoomState>, timeoutMs = 8000): Promise<void> {
-  if (isGameRoom(room) && room.state.board?.length === 9) {
+  if (isGameRoom(room)) {
     return Promise.resolve();
   }
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
-      if (isGameRoom(room)) {
-        resolve();
-      } else {
-        reject(new Error("GAME_ROOM_STATE_UNAVAILABLE"));
-      }
+      if (isGameRoom(room)) resolve();
+      else reject(new Error("GAME_ROOM_STATE_UNAVAILABLE"));
     }, timeoutMs);
 
     const onChange = () => {
@@ -43,14 +39,9 @@ export function waitForGameState(room: Room<GameRoomState>, timeoutMs = 8000): P
 }
 
 export function getGameRoomErrorMessage(): string {
-  return "Server is still on the old watch-together build. Redeploy the latest server to Railway, then reopen the Activity.";
+  return "Server is still on an old build. Redeploy the latest server to Railway, then reopen the Activity.";
 }
 
-/** @deprecated use waitForGameState */
 export const waitForWatchState = waitForGameState;
-
-/** @deprecated use getGameRoomErrorMessage */
 export const getWatchRoomErrorMessage = getGameRoomErrorMessage;
-
-/** @deprecated */
 export const isWatchTogetherRoom = isGameRoom;

@@ -1,38 +1,33 @@
-# Discord Activity — Tic-Tac-Toe
+# Bluff Party — Discord Activity
 
-Multiplayer **Tic-Tac-Toe** for Discord voice channels, built with Colyseus + the Discord Embedded App SDK.
+**Bluff Party** is a Fibbage-style party game for Discord voice channels. Write convincing lies, vote for the truth, and fool your friends — the same kind of game people love in **Jackbox**, **Gartic Phone**, and **Sketch Heads** on Discord.
 
-Open the Activity while in a voice channel — the first two players become **X** and **O**; everyone else can watch.
+## Why this game?
 
-## Project structure
-
-- `apps/client/` — Vite + TypeScript UI (`GameApp`)
-- `apps/server/` — Colyseus game room (`GameRoom`) + Discord OAuth
-
-## Environment variables
-
-- `apps/client/.env` — `VITE_DISCORD_CLIENT_ID`
-- `apps/server/.env` — `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `JWT_SECRET`
-
-## Local development
-
-```bash
-npm install
-npm run start:server   # terminal 1 — port 2567
-npm run start:client   # terminal 2 — Vite dev server
-```
-
-Use a tunnel (`cloudflared` / `ngrok`) and map URLs in the [Discord Developer Portal](https://discord.com/developers/applications) to test inside Discord.
-
-## Deploy
-
-Deploy **both** client (Vercel) and server (Railway). The server registers room `my_room` filtered by voice `channelId` — one game per channel.
-
-> **Note:** The previous Watch Together / SyncTube code is still in the repo under `WatchRoom.ts` and `WatchApp.ts` but is no longer used. This Activity is now a party game.
+- Works great with **3–12 players** in voice
+- **No video streaming** — pure social fun, reliable in Discord Activities
+- Short rounds, lots of laughs, easy to pick up
+- Built on Colyseus + Discord Embedded App SDK
 
 ## How to play
 
-1. Join a Discord voice channel
-2. Launch the Activity
-3. First joiner is **X**, second is **O**
-4. Tap squares on your turn; use **Play again** after a win or draw
+1. Join a **voice channel** and open the Activity
+2. Wait for **3+ players** — host taps **Start game**
+3. **Submit** a fake answer to the prompt
+4. **Vote** for what you think is the real answer
+5. Score **+2** for finding truth, **+1** for each friend fooled by your lie
+6. **5 rounds** — highest score wins
+
+## Development
+
+```bash
+npm install
+npm run start:server   # port 2567
+npm run start:client   # Vite
+```
+
+Set `VITE_DISCORD_CLIENT_ID` (client) and `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `JWT_SECRET` (server).
+
+## Deploy
+
+Deploy **client** (Vercel) and **server** (Railway) together. Room name: `my_room`, one game per voice `channelId`.
