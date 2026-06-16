@@ -32,6 +32,7 @@ export interface VideoPlayer {
   unlockPlayback(): void;
   setPlaybackRate(_rate: number): void;
   waitForReady(): Promise<void>;
+  isReady?(): boolean;
   reload?(): Promise<void>;
   destroy(): void;
 }
@@ -161,6 +162,10 @@ export class PostMessageVideoPlayer implements VideoPlayer {
 
   waitForReady(): Promise<void> {
     return this.readyPromise;
+  }
+
+  isReady(): boolean {
+    return this.ready;
   }
 
   private handleMessage(event: MessageEvent) {

@@ -2,10 +2,8 @@ import type { VideoPlayer, PlayerEventHandler, YtPlayerState } from "./YouTubePl
 import { getYouTubeMediaUrl } from "../utils/discordUrls.js";
 
 const DISCORD_AUTOPLAY_RETRIES = 12;
-const BUFFER_TIMEOUT_MS = 180_000;
+const STREAM_READY_TIMEOUT_MS = 90_000;
 const SEEK_STALL_MS = 12_000;
-/** Buffer entire MP4 locally so seeks don't re-hit the proxy (max ~100 MB). */
-const MAX_BLOB_BYTES = 100 * 1024 * 1024;
 
 function waitForMediaEvent(
   video: HTMLVideoElement,
@@ -13,6 +11,11 @@ function waitForMediaEvent(
   timeoutMs: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (event === "canplay" && video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      resolve();
+      return;
+    }
+
     const timer = setTimeout(() => {
       video.removeEventListener(event, onEvent);
       reject(new Error(`Timed out waiting for ${event}`));
@@ -47,13 +50,10 @@ export class HtmlVideoPlayer implements VideoPlayer {
   private onAutoplayBlocked?: (mode: "muted" | "blocked") => void;
   private mediaGeneration = 0;
   private playbackMuted = false;
-  private blobUrl: string | null = null;
-  private useStreamingSrc = false;
   private prepareTask: Promise<void> | null = null;
-  private prepareAbort: AbortController | null = null;
   private prepareGeneration = 0;
+  private prepareGenerationForErrors = 0;
   private pendingStartTime = 0;
-  private pendingAutoplay = false;
 
   constructor(container: HTMLElement, handlers: PlayerEventHandler) {
     this.onStateChange = handlers.onStateChange;
@@ -104,7 +104,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.video.addEventListener("waiting", () => {
       this.lastState = "buffering";
       this.onStateChange?.("buffering", this.getCurrentTime());
-      if (this.wantsPlay && !this.useStreamingSrc) {
+      if (this.wantsPlay) {
         window.setTimeout(() => this.tryResumePlayback(), 250);
       }
     });
@@ -124,8 +124,18 @@ export class HtmlVideoPlayer implements VideoPlayer {
     });
 
     this.video.addEventListener("error", () => {
+      if (this.prepareGenerationForErrors !== this.prepareGeneration) return;
       void this.handleMediaError();
     });
+  }
+
+  private setStreamSource(videoId: string): void {
+    this.video.src = getYouTubeMediaUrl(videoId, this.mediaGeneration);
+  }
+
+  /** Fast start — ready as soon as the browser can begin playback (not full download). */
+  private async waitForStreamReady(): Promise<void> {
+    await waitForMediaEvent(this.video, "canplay", STREAM_READY_TIMEOUT_MS);
   }
 
   private createReadyPromise(): Promise<void> {
@@ -153,13 +163,6 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.rejectReady?.(err);
     this.resolveReady = null;
     this.rejectReady = null;
-  }
-
-  private revokeBlob(): void {
-    if (this.blobUrl) {
-      URL.revokeObjectURL(this.blobUrl);
-      this.blobUrl = null;
-    }
   }
 
   private clearAutoplayRetry(): void {
@@ -195,111 +198,42 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.onError?.(150);
   }
 
-  /** Download the full stream once — local blob makes seeks instant and reliable. */
-  private async bufferFullVideo(videoId: string, signal: AbortSignal): Promise<void> {
-    const url = getYouTubeMediaUrl(videoId, this.mediaGeneration);
-    const res = await fetch(url, { signal, credentials: "same-origin" });
-      if (!res.ok) {
-        throw new Error(`Media fetch failed (${res.status})`);
-      }
-
-      const contentLength = res.headers.get("content-length");
-      if (contentLength && Number(contentLength) > MAX_BLOB_BYTES) {
-        this.useStreamingSrc = true;
-        this.revokeBlob();
-        this.video.src = url;
-        return;
-      }
-
-      if (!res.body) {
-        throw new Error("Empty media body");
-      }
-
-      const reader = res.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let received = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        received += value.byteLength;
-        if (received > MAX_BLOB_BYTES) {
-          this.useStreamingSrc = true;
-          this.revokeBlob();
-          this.video.src = url;
-          try {
-            await reader.cancel();
-          } catch {
-            /* ignore */
-          }
-          return;
-        }
-        chunks.push(value);
-      }
-
-      const blob = new Blob(chunks as BlobPart[], {
-        type: res.headers.get("content-type")?.includes("mp4") ? "video/mp4" : "video/mp4",
-      });
-      this.useStreamingSrc = false;
-      this.revokeBlob();
-      this.blobUrl = URL.createObjectURL(blob);
-      this.video.src = this.blobUrl;
-  }
-
   private async runPrepare(
     videoId: string,
     startTime: number,
-    autoplay: boolean,
     generation: number
   ): Promise<void> {
     this.pendingStartTime = startTime;
-    this.pendingAutoplay = autoplay;
+    this.wantsPlay = false;
     this.ready = false;
     this.resetReadyPromise();
     this.lastState = "unstarted";
     this.clearAutoplayRetry();
     this.clearSeekResume();
     this.clearSeekStallTimer();
+    this.video.pause();
+    this.prepareGenerationForErrors = generation;
 
-    const abort = new AbortController();
-    this.prepareAbort?.abort();
-    this.prepareAbort = abort;
-    const bufferTimeout = setTimeout(() => abort.abort(), BUFFER_TIMEOUT_MS);
+    this.setStreamSource(videoId);
+    this.video.load();
 
-    try {
-      await this.bufferFullVideo(videoId, abort.signal);
-      if (generation !== this.prepareGeneration) return;
+    await this.waitForStreamReady();
+    if (generation !== this.prepareGeneration) return;
 
-      this.video.load();
-      await waitForMediaEvent(this.video, "canplaythrough", BUFFER_TIMEOUT_MS);
-      if (generation !== this.prepareGeneration) return;
-
-      if (startTime > 0) {
-        const capped =
-          Number.isFinite(this.video.duration) && this.video.duration > 0
-            ? Math.min(startTime, this.video.duration)
-            : startTime;
-        this.video.currentTime = capped;
-      }
-
-      this.markReady();
-
-      if (autoplay) {
-        this.tryPlay();
-      }
-    } catch (err) {
-      if (generation !== this.prepareGeneration) return;
-      throw err;
-    } finally {
-      clearTimeout(bufferTimeout);
-      if (this.prepareAbort === abort) {
-        this.prepareAbort = null;
-      }
+    if (startTime > 0) {
+      const capped =
+        Number.isFinite(this.video.duration) && this.video.duration > 0
+          ? Math.min(startTime, this.video.duration)
+          : startTime;
+      this.video.currentTime = capped;
     }
+
+    this.video.pause();
+    this.wantsPlay = false;
+    this.markReady();
   }
 
-  private startPrepare(videoId: string, startTime: number, autoplay: boolean, force: boolean): void {
+  private startPrepare(videoId: string, startTime: number, force: boolean): void {
     const sameVideo = videoId === this.videoId;
     if (!sameVideo || force) {
       this.videoId = videoId;
@@ -309,7 +243,7 @@ export class HtmlVideoPlayer implements VideoPlayer {
     }
 
     const generation = ++this.prepareGeneration;
-    this.prepareTask = this.runPrepare(videoId, startTime, autoplay, generation)
+    this.prepareTask = this.runPrepare(videoId, startTime, generation)
       .catch((err) => {
         if (generation !== this.prepareGeneration) return;
         this.ready = false;
@@ -329,24 +263,27 @@ export class HtmlVideoPlayer implements VideoPlayer {
     return this.readyPromise;
   }
 
-  load(videoId: string, startTime = 0, autoplay = false): void {
-    this.wantsPlay = autoplay;
+  isReady(): boolean {
+    return this.ready;
+  }
+
+  load(videoId: string, startTime = 0, _autoplay = false): void {
+    this.wantsPlay = false;
     if (videoId === this.videoId && this.ready) {
       if (startTime > 0) this.setMediaTime(startTime);
-      if (autoplay) this.tryPlay(startTime);
       return;
     }
     const force = videoId === this.videoId && !this.ready;
-    this.startPrepare(videoId, startTime, autoplay, force);
+    this.startPrepare(videoId, startTime, force);
   }
 
-  /** Force a fresh download after errors or broken seek state. */
   reload(): Promise<void> {
     if (!this.videoId) return Promise.resolve();
     this.mediaGeneration += 1;
     this.ready = false;
+    this.wantsPlay = false;
     this.resetReadyPromise();
-    this.startPrepare(this.videoId, this.pendingStartTime, this.wantsPlay, true);
+    this.startPrepare(this.videoId, this.pendingStartTime, true);
     return this.waitForReady();
   }
 
@@ -413,16 +350,14 @@ export class HtmlVideoPlayer implements VideoPlayer {
       this.video.removeEventListener("canplay", onCanplay);
     };
 
-    if (this.useStreamingSrc) {
-      this.clearSeekStallTimer();
-      this.seekStallTimer = setTimeout(() => {
-        this.seekStallTimer = null;
-        if (!this.wantsPlay || this.isPlaying()) return;
-        void this.reload().then(() => {
-          if (this.wantsPlay) this.tryPlay();
-        });
-      }, SEEK_STALL_MS);
-    }
+    this.clearSeekStallTimer();
+    this.seekStallTimer = setTimeout(() => {
+      this.seekStallTimer = null;
+      if (!this.wantsPlay || this.isPlaying()) return;
+      void this.reload().then(() => {
+        if (this.wantsPlay) this.tryPlay();
+      });
+    }, SEEK_STALL_MS);
   }
 
   private startPlayback(): void {
@@ -459,16 +394,12 @@ export class HtmlVideoPlayer implements VideoPlayer {
   }
 
   play(startTime?: number): void {
-    if (!this.ready) {
-      this.wantsPlay = true;
-      void this.waitForReady().then(() => this.play(startTime));
-      return;
-    }
+    if (!this.ready) return;
     if (startTime !== undefined) {
       const drift = Math.abs(this.video.currentTime - startTime);
       if (drift > 0.05) this.setMediaTime(startTime);
     }
-    this.tryPlay();
+    this.tryPlay(startTime);
   }
 
   pause(atTime?: number): void {
@@ -517,10 +448,6 @@ export class HtmlVideoPlayer implements VideoPlayer {
     return this.playbackMuted && this.video.muted;
   }
 
-  isBuffered(): boolean {
-    return this.ready && !this.useStreamingSrc && !!this.blobUrl;
-  }
-
   unlockPlayback(): void {
     this.wantsPlay = true;
     this.playbackMuted = false;
@@ -541,11 +468,8 @@ export class HtmlVideoPlayer implements VideoPlayer {
     this.clearSeekResume();
     this.clearSeekStallTimer();
     this.prepareGeneration += 1;
-    this.prepareAbort?.abort();
-    this.prepareAbort = null;
     this.prepareTask = null;
     this.video.pause();
-    this.revokeBlob();
     this.video.removeAttribute("src");
     this.video.load();
     this.video.remove();

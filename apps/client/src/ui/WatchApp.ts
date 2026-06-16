@@ -27,8 +27,13 @@ const SYNC_APPLY_THRESHOLD = 0.35;
 const LOCAL_SYNC_GRACE_MS = 1500;
 /** Suppress player state echo after programmatic play/pause/seek. */
 const STATE_BROADCAST_SUPPRESS_MS = 600;
-/** Piped stream lookup + proxy can take a long time in Discord — wait before skipping. */
-const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 60_000 : 12_000;
+/** Stream startup + Piped lookup can take a while in Discord — wait before skipping. */
+const UNAVAILABLE_CHECK_MS = isDiscordActivity() ? 90_000 : 30_000;
+/** Extra grace after load retries before showing unavailable / skipping. */
+const UNAVAILABLE_DEFERRED_MS = isDiscordActivity() ? 60_000 : 20_000;
+/** Backoff between silent load retries (ms). */
+const VIDEO_LOAD_RETRY_BASE_MS = 3000;
+const MAX_VIDEO_LOAD_RETRIES = 6;
 /** Ignore schema drift correction briefly after a play/pause/seek message. */
 const PLAYBACK_MESSAGE_GRACE_MS = 2500;
 /** Shorter post-sync grace for host so manual controls reach the server quickly. */
@@ -36,7 +41,6 @@ const HOST_SYNC_GRACE_MS = 500;
 const VIEWER_SYNC_GRACE_MS = 1500;
 const BOOTSTRAP_HOST_GRACE_MS = 1200;
 const BOOTSTRAP_VIEWER_GRACE_MS = 2000;
-const MAX_VIDEO_LOAD_RETRIES = 2;
 /** Ignore drift sync while a new video is still loading after videoChanged. */
 const VIDEO_CHANGE_SYNC_GRACE_MS = 6000;
 
@@ -102,6 +106,8 @@ export class WatchApp {
   /** True for full bootstrapSession (join / reconnect). */
   private sessionBootstrapInProgress = false;
   private lastVideoChangeAt = 0;
+  /** Frozen room time when a video starts loading — room clock keeps advancing during fetch. */
+  private loadPlaybackSnapshot: { time: number; isPlaying: boolean } | null = null;
   private keepAliveStop: (() => void) | null = null;
   private networkRecoveryStop: (() => void) | null = null;
   private reconnectInFlight = false;
@@ -413,6 +419,24 @@ export class WatchApp {
 
   private shouldIgnoreRemotePlaybackApply(): boolean {
     return this.canControlPlayback() && Date.now() < this.ignoreRemotePlaybackUntil;
+  }
+
+  /** Block play/pause/seek until the video is fully buffered and positioned. */
+  private shouldDeferPlaybackApply(): boolean {
+    if (this.playerLoading || this.roomSyncInProgress) return true;
+    if (!this.room.state.videoId) return true;
+    if (this.loadedVideoId !== this.room.state.videoId) return true;
+    if (this.loadPlaybackSnapshot) return true;
+    if (Date.now() - this.lastVideoChangeAt < VIDEO_CHANGE_SYNC_GRACE_MS) {
+      if (!this.player?.isReady?.()) return true;
+    }
+    return false;
+  }
+
+  private isPlayerReadyForPlayback(): boolean {
+    if (!this.player || !this.room.state.videoId) return false;
+    if (this.shouldDeferPlaybackApply()) return false;
+    return this.player.isReady?.() ?? true;
   }
 
   /** Skip duplicate play/pause right after videoChanged already applied the same state. */
@@ -1497,11 +1521,14 @@ export class WatchApp {
   private handlePlayerError(errorCode: number) {
     const title = this.room.state.videoTitle || "This video";
     if (errorCode === 100 || errorCode === 101) {
+      this.setPlayerLoading(false);
       this.showPlayerUnavailable(`${title} is unavailable`);
       if (this.isHost) this.signalVideoUnavailable(errorCode);
       return;
     }
-    this.showPlayerUnavailable(`Couldn't load "${title}" — retrying…`);
+    // Transient load errors — keep loading spinner, retry silently (no unavailable overlay).
+    this.hidePlayerUnavailable();
+    this.setPlayerLoading(true);
     void this.retryPlaybackOrDeferUnavailable(errorCode);
   }
 
@@ -1513,38 +1540,48 @@ export class WatchApp {
     if (attempts < MAX_VIDEO_LOAD_RETRIES) {
       this.videoLoadRetries.set(videoId, attempts + 1);
       this.unavailableSentForVideoId = "";
-      if (!this.suppressPlaybackToasts) {
-        toast.show("Video is loading slowly — retrying…", "warning");
-      }
+      this.hidePlayerUnavailable();
+      this.setPlayerLoading(true);
 
-      await new Promise((r) => setTimeout(r, 2000));
-      if (this.room.state.videoId !== videoId) return;
+      const delay = VIDEO_LOAD_RETRY_BASE_MS * Math.pow(1.5, attempts);
+      await new Promise((r) => setTimeout(r, delay));
+      if (this.room.state.videoId !== videoId) {
+        this.setPlayerLoading(false);
+        return;
+      }
 
       this.loadedVideoId = "";
       const sync = this.lastSync ?? this.buildSyncFromRoom();
+      const snapshotTime = sync.currentTime;
       try {
         if (this.player?.reload) {
           await this.player.reload();
         } else {
           this.resetPlayerInstance();
           await this.ensurePlayer(videoId, {
-            startTime: sync.currentTime,
-            autoplay: sync.isPlaying,
+            startTime: snapshotTime,
+            autoplay: false,
           });
         }
-        this.loadedVideoId = videoId;
+        if (this.player) {
+          await this.player.waitForReady();
+          this.loadedVideoId = videoId;
+          this.videoLoadRetries.delete(videoId);
+          this.hidePlayerUnavailable();
+          this.startPlaybackAfterLoad(snapshotTime, sync.isPlaying);
+        }
+        this.setPlayerLoading(false);
         if (sync.isPlaying) this.scheduleUnavailableCheck();
         return;
       } catch {
-        /* fall through to deferred check */
+        /* try again or fall through */
       }
     }
 
+    // Still not loaded — keep spinner, wait a long time before unavailable UI / skip.
+    this.hidePlayerUnavailable();
+    this.setPlayerLoading(true);
     this.scheduleUnavailableCheck(true, errorCode);
-    this.showPlayerUnavailable(`"${this.room.state.videoTitle || "Video"}" couldn't be played`);
-    if (!this.suppressPlaybackToasts) {
-      this.showStatus("Could not load this video. Skipping when possible.", true);
-    }
   }
 
   private clearUnavailableCheck() {
@@ -1554,7 +1591,15 @@ export class WatchApp {
     }
   }
 
+  private isVideoLoadSuccessful(): boolean {
+    if (!this.player || !this.room.state.videoId) return false;
+    if (this.loadedVideoId !== this.room.state.videoId) return false;
+    if (!(this.player.isReady?.() ?? false)) return false;
+    return this.player.getDuration() > 0;
+  }
+
   private isVideoActuallyPlaying(): boolean {
+    if (this.isVideoLoadSuccessful()) return true;
     if (!this.player || !this.room.state.videoId) return false;
     if (this.loadedVideoId !== this.room.state.videoId) return false;
     if (this.playerLoading || this.roomSyncInProgress) return false;
@@ -1576,10 +1621,33 @@ export class WatchApp {
 
   /** Playback time to apply when loading — use snapshot, not advancing room clock. */
   private getPlaybackTimeForSync(sync: SyncPayload, videoChanged: boolean): number {
-    if (videoChanged || this.isVideoLoadPending()) {
+    if (this.loadPlaybackSnapshot) {
+      return this.loadPlaybackSnapshot.time;
+    }
+    if (videoChanged) {
       return sync.currentTime;
     }
     return sync.currentTime;
+  }
+
+  /** Position at snapshot time while paused, then play if the room is playing. */
+  private startPlaybackAfterLoad(time: number, isPlaying: boolean): void {
+    if (!this.player) return;
+    this.applyingRemotePlayback = true;
+    this.withSuppressedStateBroadcast(() => {
+      this.player!.pause(time);
+      const drift = Math.abs(this.player!.getCurrentTime() - time);
+      if (drift > 0.05) {
+        this.player!.seek(time, false);
+      }
+      if (isPlaying) {
+        this.player!.play(time);
+      }
+    });
+    this.clearApplyingRemotePlaybackLater();
+    if (isPlaying) {
+      this.scheduleAutoplayCheck();
+    }
   }
 
   private scheduleUnavailableCheck(deferred = false, errorCode?: number) {
@@ -1588,18 +1656,27 @@ export class WatchApp {
     // One reporter avoids duplicate skip races; host is authoritative for playback.
     if (!videoId || !this.isHost) return;
 
-    const delay = deferred ? 12_000 : UNAVAILABLE_CHECK_MS;
+    const delay = deferred ? UNAVAILABLE_DEFERRED_MS : UNAVAILABLE_CHECK_MS;
 
     this.unavailableCheckTimer = setTimeout(() => {
       this.unavailableCheckTimer = null;
       if (!this.player || this.room.state.videoId !== videoId) return;
       if (this.unavailableSentForVideoId === videoId || this.videoEndedSent) return;
-      if (this.playerLoading) {
+      if (
+        this.playerLoading ||
+        this.roomSyncInProgress ||
+        this.loadPlaybackSnapshot ||
+        this.isVideoLoadPending()
+      ) {
         this.scheduleUnavailableCheck(deferred, errorCode);
         return;
       }
-      if (this.isVideoActuallyPlaying()) return;
+      if (this.isVideoLoadSuccessful() || this.isVideoActuallyPlaying()) return;
 
+      this.showPlayerUnavailable(
+        `"${this.room.state.videoTitle || "Video"}" couldn't be played`
+      );
+      this.setPlayerLoading(false);
       this.signalVideoUnavailable(errorCode);
     }, delay);
   }
@@ -1745,7 +1822,7 @@ export class WatchApp {
         this.updatePlayerControls();
         return;
       }
-      if (!this.shouldIgnoreRemotePlaybackApply()) {
+      if (!this.shouldIgnoreRemotePlaybackApply() && !this.shouldDeferPlaybackApply()) {
         this.markPlaybackMessageApplied();
         this.applyPlay(data.currentTime);
       }
@@ -1768,7 +1845,7 @@ export class WatchApp {
         this.updatePlayerControls();
         return;
       }
-      if (!this.shouldIgnoreRemotePlaybackApply()) {
+      if (!this.shouldIgnoreRemotePlaybackApply() && !this.shouldDeferPlaybackApply()) {
         this.markPlaybackMessageApplied();
         this.applyPause(data.currentTime);
       }
@@ -1783,7 +1860,7 @@ export class WatchApp {
         this.updatePlayerControls();
         return;
       }
-      if (!this.shouldIgnoreRemotePlaybackApply()) {
+      if (!this.shouldIgnoreRemotePlaybackApply() && !this.shouldDeferPlaybackApply()) {
         this.markPlaybackMessageApplied();
         this.seekTo(data.currentTime, this.room.state.isPlaying);
       }
@@ -2249,14 +2326,20 @@ export class WatchApp {
 
   private async applyVideoChange(sync: SyncPayload) {
     this.roomSyncInProgress = true;
+    this.hidePlayerUnavailable();
+    this.setPlayerLoading(true);
+    const snapshotTime = sync.currentTime;
+    this.loadPlaybackSnapshot = { time: snapshotTime, isPlaying: sync.isPlaying };
     try {
       const previousVideoId = this.loadedVideoId;
       if (!sync.videoId) {
         this.loadedVideoId = "";
+        this.loadPlaybackSnapshot = null;
         this.lastSync = sync;
         this.renderVideoTitle();
         this.renderQueue();
         this.clearUnavailableCheck();
+        this.setPlayerLoading(false);
         return;
       }
 
@@ -2265,35 +2348,31 @@ export class WatchApp {
         this.loadedVideoId = "";
       }
 
-      const startTime = isNewVideo ? 0 : sync.currentTime;
       await this.ensurePlayer(sync.videoId, {
-        startTime,
+        startTime: snapshotTime,
         autoplay: false,
       });
 
       if (!this.player || !sync.videoId) return;
 
-      if (this.player.waitForReady) {
-        await this.player.waitForReady();
-      }
+      await this.player.waitForReady();
 
       this.loadedVideoId = sync.videoId;
       this.prefetchVideoDuration(sync.videoId);
-      this.lastSync = { ...sync, currentTime: startTime };
+      this.lastSync = { ...sync, currentTime: snapshotTime };
 
-      const playTime = this.getPlaybackTimeForSync(sync, isNewVideo);
-      if (sync.isPlaying) {
-        this.applyPlay(playTime);
-        if (this.canControlPlayback()) this.markLocalPlaybackAction();
-        if (this.isHost) this.scheduleUnavailableCheck();
-      } else {
-        this.applyPause(playTime);
-      }
+      this.startPlaybackAfterLoad(snapshotTime, sync.isPlaying);
+      if (sync.isPlaying && this.canControlPlayback()) this.markLocalPlaybackAction();
+      if (sync.isPlaying && this.isHost) this.scheduleUnavailableCheck();
 
       this.renderVideoTitle();
       this.renderQueue();
     } finally {
+      this.loadPlaybackSnapshot = null;
       this.roomSyncInProgress = false;
+      if (this.isVideoLoadSuccessful() || !this.room.state.videoId) {
+        this.setPlayerLoading(false);
+      }
       this.setRoomSyncGrace();
     }
   }
@@ -2327,31 +2406,29 @@ export class WatchApp {
     const autoplay = options.autoplay ?? false;
     const container = this.root.querySelector("#yt-player") as HTMLElement;
 
-    if (this.player && this.loadedVideoId === videoId) {
-      try {
-        await this.player.waitForReady();
-      } catch {
-        if (this.player.reload) {
-          await this.player.reload();
-        } else {
-          this.loadedVideoId = "";
-        }
-      }
       if (this.player && this.loadedVideoId === videoId) {
-        const resumeTime = options.startTime ?? this.player.getCurrentTime();
-        const shouldPlay =
-          options.autoplay !== undefined ? options.autoplay : this.player.isPlaying();
-        if (shouldPlay) {
-          this.player.play(resumeTime);
-        } else {
-          this.player.pause(resumeTime);
+        try {
+          await this.player.waitForReady();
+        } catch {
+          if (this.player.reload) {
+            await this.player.reload();
+          } else {
+            this.loadedVideoId = "";
+          }
         }
-        return;
+        if (this.player && this.loadedVideoId === videoId) {
+          const resumeTime = options.startTime ?? this.player.getCurrentTime();
+          if (options.autoplay === true) {
+            this.player.play(resumeTime);
+          } else if (options.autoplay === false) {
+            this.player.pause(resumeTime);
+          }
+          return;
+        }
       }
-    }
 
     const loadFresh = async () => {
-      this.player!.load(videoId, startTime, autoplay);
+      this.player!.load(videoId, startTime, false);
       await this.player!.waitForReady();
     };
 
@@ -2366,7 +2443,9 @@ export class WatchApp {
           onAutoplayBlocked: (mode) => this.showAutoplayUnlock(mode),
         });
         await loadFresh();
-        this.loadedVideoId = videoId;
+        if (!this.loadPlaybackSnapshot) {
+          this.loadedVideoId = videoId;
+        }
         this.prefetchVideoDuration(videoId);
         this.reportDurationToServer();
         if (autoplay) this.scheduleUnavailableCheck();
@@ -2374,7 +2453,9 @@ export class WatchApp {
         this.resetPlayerInstance();
         void this.retryPlaybackOrDeferUnavailable();
       } finally {
-        this.setPlayerLoading(false);
+        if (this.player?.isReady?.()) {
+          this.setPlayerLoading(false);
+        }
       }
       return;
     }
@@ -2382,7 +2463,9 @@ export class WatchApp {
     this.setPlayerLoading(true);
     try {
       await loadFresh();
-      this.loadedVideoId = videoId;
+      if (!this.loadPlaybackSnapshot) {
+        this.loadedVideoId = videoId;
+      }
       this.prefetchVideoDuration(videoId);
       this.reportDurationToServer();
       if (autoplay) this.scheduleUnavailableCheck();
@@ -2390,7 +2473,9 @@ export class WatchApp {
       if (this.player?.reload) {
         try {
           await this.player.reload();
-          this.loadedVideoId = videoId;
+          if (!this.loadPlaybackSnapshot) {
+            this.loadedVideoId = videoId;
+          }
           return;
         } catch {
           /* fall through */
@@ -2399,7 +2484,9 @@ export class WatchApp {
       this.resetPlayerInstance();
       void this.retryPlaybackOrDeferUnavailable();
     } finally {
-      this.setPlayerLoading(false);
+      if (this.player?.isReady?.()) {
+        this.setPlayerLoading(false);
+      }
     }
   }
 
@@ -2419,11 +2506,18 @@ export class WatchApp {
       this.renderVideoTitle();
       return;
     }
-    if (this.isVideoLoadPending()) return;
+    if (this.isVideoLoadPending() && !force) return;
+
+    const videoChanged = sync.videoId !== this.loadedVideoId;
+    const snapshotTime = sync.currentTime;
+    if (videoChanged) {
+      this.hidePlayerUnavailable();
+      this.setPlayerLoading(true);
+      this.loadPlaybackSnapshot = { time: snapshotTime, isPlaying: sync.isPlaying };
+    }
 
     this.roomSyncInProgress = true;
     try {
-      const videoChanged = sync.videoId !== this.loadedVideoId;
       const startTime = this.getPlaybackTimeForSync(sync, videoChanged);
       await this.ensurePlayer(sync.videoId, {
         startTime,
@@ -2431,34 +2525,35 @@ export class WatchApp {
       });
       if (!this.player || !sync.videoId) return;
 
-      if (this.player.waitForReady) {
-        await this.player.waitForReady();
-      }
+      await this.player.waitForReady();
 
       this.loadedVideoId = sync.videoId;
       this.prefetchVideoDuration(sync.videoId);
-
-      this.lastSync = sync;
-      const playTime = this.getPlaybackTimeForSync(sync, videoChanged);
-      const localTime = this.player.getCurrentTime();
-      const drift = Math.abs(localTime - playTime);
-      const needsUpdate = force || drift > SYNC_APPLY_THRESHOLD;
-      const playingMismatch = this.player.isPlaying() !== sync.isPlaying;
 
       if (sync.playbackRate) {
         this.player.setPlaybackRate(sync.playbackRate);
       }
 
-      if (sync.isPlaying) {
-        if (needsUpdate || playingMismatch || videoChanged) {
-          this.applyPlay(playTime);
-          if (videoChanged && this.canControlPlayback()) this.markLocalPlaybackAction();
+      if (videoChanged) {
+        this.lastSync = { ...sync, currentTime: snapshotTime };
+        this.startPlaybackAfterLoad(snapshotTime, sync.isPlaying);
+        if (sync.isPlaying && this.canControlPlayback()) this.markLocalPlaybackAction();
+        if (sync.isPlaying && this.isHost) this.scheduleUnavailableCheck();
+      } else {
+        this.lastSync = sync;
+        const playTime = this.getPlaybackTimeForSync(sync, false);
+        const localTime = this.player.getCurrentTime();
+        const drift = Math.abs(localTime - playTime);
+        const needsUpdate = force || drift > SYNC_APPLY_THRESHOLD;
+        const playingMismatch = this.player.isPlaying() !== sync.isPlaying;
+
+        if (sync.isPlaying) {
+          if (needsUpdate || playingMismatch) {
+            this.applyPlay(playTime);
+          }
+        } else if (needsUpdate || playingMismatch) {
+          this.applyPause(playTime);
         }
-        if (videoChanged && this.isHost) {
-          this.scheduleUnavailableCheck();
-        }
-      } else if (needsUpdate || playingMismatch || videoChanged) {
-        this.applyPause(playTime);
       }
 
       this.renderVideoTitle();
@@ -2467,6 +2562,12 @@ export class WatchApp {
         this.lastSync = this.buildSyncFromRoom();
       }
     } finally {
+      if (videoChanged) {
+        this.loadPlaybackSnapshot = null;
+        if (this.isVideoLoadSuccessful() || !this.room.state.videoId) {
+          this.setPlayerLoading(false);
+        }
+      }
       this.roomSyncInProgress = false;
       this.setRoomSyncGrace();
     }
@@ -2483,7 +2584,7 @@ export class WatchApp {
   }
 
   private applyPlay(currentTime: number) {
-    if (!this.player) return;
+    if (!this.player || !this.isPlayerReadyForPlayback()) return;
     this.applyingRemotePlayback = true;
     this.withSuppressedStateBroadcast(() => {
       const drift = Math.abs(this.player!.getCurrentTime() - currentTime);
@@ -2491,9 +2592,8 @@ export class WatchApp {
       if (playing && drift <= SYNC_APPLY_THRESHOLD) return;
       if (drift > SYNC_APPLY_THRESHOLD) {
         this.player!.seek(currentTime, true);
-      }
-      if (!this.player!.isPlaying()) {
-        this.player!.play();
+      } else if (!playing) {
+        this.player!.play(currentTime);
       }
     });
     this.clearApplyingRemotePlaybackLater();
@@ -2503,7 +2603,7 @@ export class WatchApp {
   }
 
   private applyPause(currentTime: number) {
-    if (!this.player) return;
+    if (!this.player || !this.isPlayerReadyForPlayback()) return;
     this.hideAutoplayUnlock();
     this.applyingRemotePlayback = true;
     this.withSuppressedStateBroadcast(() => {
@@ -2519,7 +2619,7 @@ export class WatchApp {
   }
 
   private seekTo(time: number, keepPlaying?: boolean) {
-    if (!this.player) return;
+    if (!this.player || !this.isPlayerReadyForPlayback()) return;
     const resume = keepPlaying ?? this.room.state.isPlaying;
     this.applyingRemotePlayback = true;
     this.withSuppressedStateBroadcast(() => {
