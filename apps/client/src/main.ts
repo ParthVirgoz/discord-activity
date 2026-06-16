@@ -5,22 +5,15 @@ import { discordSDK } from "./utils/DiscordSDK.js";
 setupDiscordNetworking();
 import { colyseusSDK } from "./utils/Colyseus.js";
 import { authenticate } from "./utils/Auth.js";
-import { WatchApp } from "./ui/WatchApp.js";
-import { waitForWatchState, getWatchRoomErrorMessage } from "./utils/roomState.js";
+import { GameApp } from "./ui/GameApp.js";
+import { waitForGameState, getGameRoomErrorMessage } from "./utils/roomState.js";
 import { configureRoomResilience } from "./utils/roomConnection.js";
-import { joinWatchRoom } from "./utils/watchRoomJoin.js";
+import { joinGameRoom } from "./utils/gameRoomJoin.js";
+
 const appRoot = document.getElementById("app")!;
 
 function showError(message: string) {
   appRoot.innerHTML = `<div class="error-screen"><p>${message}</p></div>`;
-}
-
-async function connectWatchRoom() {
-  const channelId = discordSDK.channelId;
-  if (!channelId) {
-    throw new Error("Discord channelId unavailable — join a voice channel first");
-  }
-  return joinWatchRoom(channelId);
 }
 
 function showLoading(message: string) {
@@ -45,27 +38,28 @@ function showLoading(message: string) {
   }
 
   try {
-    showLoading("Joining your voice channel room…");
+    showLoading("Joining your voice channel game…");
 
-    const room = await connectWatchRoom();
+    const channelId = discordSDK.channelId;
+    if (!channelId) {
+      throw new Error("Join a Discord voice channel, then open this Activity.");
+    }
+
+    const room = await joinGameRoom(channelId);
     configureRoomResilience(room);
-    await waitForWatchState(room);
+    await waitForGameState(room);
 
     appRoot.innerHTML = "";
-    new WatchApp(room, appRoot);
-
-    room.onLeave((code: number) => {
-      console.log("Left room:", code);
-    });
+    new GameApp(room, appRoot);
   } catch (e) {
-    console.error("Failed to join room", e);
+    console.error("Failed to join game room", e);
     const msg = e instanceof Error ? e.message : String(e);
     const needsDeploy =
-      msg.includes("watch_room") ||
+      msg.includes("GAME_ROOM_STATE_UNAVAILABLE") ||
       msg.includes("not defined") ||
       msg.includes("520") ||
-      msg.includes("WATCH_ROOM_STATE_UNAVAILABLE") ||
-      msg.includes("old game");
-    showError(needsDeploy ? getWatchRoomErrorMessage() : `Failed to join watch room: ${msg}`);
+      msg.includes("old game") ||
+      msg.includes("queue");
+    showError(needsDeploy ? getGameRoomErrorMessage() : `Failed to join game: ${msg}`);
   }
 })();

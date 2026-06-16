@@ -1,16 +1,6 @@
 import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
 
-export type QueueItemStatus = "queued" | "playing" | "played" | "unavailable";
-
-export class QueueItem extends Schema {
-  @type("string") videoId = "";
-  @type("string") title = "";
-  @type("string") channelName = "";
-  @type("string") addedBy = "";
-  @type("string") addedBySessionId = "";
-  @type("string") status: QueueItemStatus = "queued";
-  @type("number") durationSec = 0;
-}
+export type GamePhase = "waiting" | "playing" | "finished";
 
 export class Member extends Schema {
   @type("string") username = "";
@@ -18,21 +8,13 @@ export class Member extends Schema {
   @type("string") discordId = "";
 }
 
-export class WatchRoomState extends Schema {
-  @type("string") hostSessionId = "";
-  @type("string") videoId = "";
-  @type("string") videoTitle = "";
-  @type("number") currentTime = 0;
-  @type("boolean") isPlaying = false;
-  @type("number") playbackRate = 1;
-  @type("number") lastUpdatedAt = 0;
-  @type("number") videoDurationSec = 0;
-  @type("boolean") allowEveryoneQueue = true;
-  @type("boolean") allowEveryonePlayback = true;
-  @type("boolean") allowOthersToHost = false;
-  @type("boolean") allowReplayPlayed = true;
-  @type("boolean") dimPlayedInPlaylist = false;
-  @type("boolean") continueFromPosition = true;
-  @type({ array: QueueItem }) queue = new ArraySchema<QueueItem>();
+export class GameRoomState extends Schema {
   @type({ map: Member }) members = new MapSchema<Member>();
+  @type(["string"]) board = new ArraySchema<string>();
+  @type("string") phase: GamePhase = "waiting";
+  @type("string") currentTurnSessionId = "";
+  @type("string") playerXSessionId = "";
+  @type("string") playerOSessionId = "";
+  @type("string") winner = "";
+  @type("string") channelId = "";
 }

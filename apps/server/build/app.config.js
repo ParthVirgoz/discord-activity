@@ -12,7 +12,6 @@ const express_1 = __importDefault(require("express"));
  * Import your Room files
  */
 const MyRoom_1 = require("./rooms/MyRoom");
-const youtube_1 = __importDefault(require("./routes/youtube"));
 const securityHeaders_1 = require("./utils/securityHeaders");
 exports.default = (0, colyseus_1.defineServer)({
     rooms: {
@@ -30,19 +29,21 @@ exports.default = (0, colyseus_1.defineServer)({
         app.use(securityHeaders_1.securityHeaders);
         app.use(express_1.default.json({ limit: "16kb" }));
         app.get("/", (_req, res) => {
-            res.json({ ok: true, service: "watch-together" });
+            res.json({ ok: true, service: "discord-game" });
         });
         app.get("/health", (_req, res) => {
             res.json({
                 ok: true,
-                service: "watch-together",
+                service: "discord-game",
                 uptime: Math.floor(process.uptime()),
             });
         });
         app.get("/hello_world", (_req, res) => {
             res.send("It's time to kick ass and chew bubblegum!");
         });
-        app.use("/api/youtube", youtube_1.default);
+        app.use("/api/youtube", (_req, res) => {
+            res.status(410).json({ error: "Watch Together was replaced by the voice channel game." });
+        });
         //
         // Discord Embedded SDK: Retrieve user token when under Discord/Embed
         //

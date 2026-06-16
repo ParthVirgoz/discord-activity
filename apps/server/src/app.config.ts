@@ -8,7 +8,6 @@ import express from "express";
  * Import your Room files
  */
 import { MyRoom } from "./rooms/MyRoom";
-import youtubeRoutes from "./routes/youtube";
 import { securityHeaders } from "./utils/securityHeaders";
 
 export default defineServer({
@@ -30,13 +29,13 @@ export default defineServer({
         app.use(express.json({ limit: "16kb" }));
 
         app.get("/", (_req, res) => {
-            res.json({ ok: true, service: "watch-together" });
+            res.json({ ok: true, service: "discord-game" });
         });
 
         app.get("/health", (_req, res) => {
             res.json({
                 ok: true,
-                service: "watch-together",
+                service: "discord-game",
                 uptime: Math.floor(process.uptime()),
             });
         });
@@ -45,7 +44,9 @@ export default defineServer({
             res.send("It's time to kick ass and chew bubblegum!");
         });
 
-        app.use("/api/youtube", youtubeRoutes);
+        app.use("/api/youtube", (_req, res) => {
+            res.status(410).json({ error: "Watch Together was replaced by the voice channel game." });
+        });
 
         //
         // Discord Embedded SDK: Retrieve user token when under Discord/Embed

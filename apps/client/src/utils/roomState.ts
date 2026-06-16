@@ -1,49 +1,34 @@
 import type { Room } from "@colyseus/sdk";
-import type { WatchRoomState } from "../schema.js";
+import type { GameRoomState } from "../schema.js";
 
-type LegacyGameState = WatchRoomState & { players?: unknown };
-
-export function isWatchTogetherRoom(room: Room<WatchRoomState>): boolean {
-  const state = room.state as LegacyGameState;
-  if (state.players && !state.members) {
+export function isGameRoom(room: Room<GameRoomState>): boolean {
+  const state = room.state as GameRoomState & { players?: unknown; queue?: unknown };
+  if (state.players || state.queue) {
     return false;
   }
-  return (
-    state.members != null &&
-    typeof state.members.forEach === "function" &&
-    state.queue != null &&
-    typeof state.queue.forEach === "function"
-  );
+  return state.members != null && typeof state.members.forEach === "function";
 }
 
-function stateHasDecodedData(room: Room<WatchRoomState>): boolean {
-  const members = room.state?.members;
-  const queue = room.state?.queue;
-  const memberCount = members && typeof members.size === "number" ? members.size : 0;
-  const queueLength = queue && typeof queue.length === "number" ? queue.length : 0;
-  return memberCount > 0 || queueLength > 0;
-}
-
-/** Wait until Colyseus exposes the watch-room schema (members + queue). */
-export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 8000): Promise<void> {
-  if (isWatchTogetherRoom(room)) {
-    return waitForStatePatch(room, timeoutMs);
+/** Wait until Colyseus exposes the game room schema. */
+export function waitForGameState(room: Room<GameRoomState>, timeoutMs = 8000): Promise<void> {
+  if (isGameRoom(room) && room.state.board?.length === 9) {
+    return Promise.resolve();
   }
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
-      if (isWatchTogetherRoom(room)) {
-        resolve(waitForStatePatch(room, Math.max(2000, timeoutMs - 2000)));
+      if (isGameRoom(room)) {
+        resolve();
       } else {
-        reject(new Error("WATCH_ROOM_STATE_UNAVAILABLE"));
+        reject(new Error("GAME_ROOM_STATE_UNAVAILABLE"));
       }
     }, timeoutMs);
 
     const onChange = () => {
-      if (isWatchTogetherRoom(room)) {
+      if (isGameRoom(room)) {
         cleanup();
-        resolve(waitForStatePatch(room, Math.max(2000, timeoutMs - 2000)));
+        resolve();
       }
     };
 
@@ -57,48 +42,15 @@ export function waitForWatchState(room: Room<WatchRoomState>, timeoutMs = 8000):
   });
 }
 
-/**
- * After schema exists, wait for decoded queue/member data before bootstrap.
- * Uses setTimeout(0) instead of rAF so hidden Discord tabs don't stall.
- */
-function waitForStatePatch(room: Room<WatchRoomState>, timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let patchCount = 0;
-    const hasVideo = () => !!room.state?.videoId;
-    const queueReady = () => {
-      const queueLen = room.state?.queue?.length ?? 0;
-      if (queueLen > 0) return true;
-      // Empty room or cleared queue — one patch is enough.
-      return patchCount >= 1 && !hasVideo();
-    };
-
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      room.onStateChange.remove(onChange);
-      clearTimeout(timer);
-      resolve();
-    };
-
-    const onChange = () => {
-      patchCount += 1;
-      if (stateHasDecodedData(room) && (queueReady() || patchCount >= 2)) {
-        setTimeout(finish, 0);
-      }
-    };
-
-    const timer = setTimeout(finish, timeoutMs);
-    room.onStateChange(onChange);
-
-    setTimeout(() => {
-      if (!settled && stateHasDecodedData(room)) {
-        onChange();
-      }
-    }, 0);
-  });
+export function getGameRoomErrorMessage(): string {
+  return "Server is still on the old watch-together build. Redeploy the latest server to Railway, then reopen the Activity.";
 }
 
-export function getWatchRoomErrorMessage(): string {
-  return "Server is still on the old game build. In Railway: leave Root Directory empty (repo root), set JWT_SECRET + Discord env vars, redeploy latest main, then retry.";
-}
+/** @deprecated use waitForGameState */
+export const waitForWatchState = waitForGameState;
+
+/** @deprecated use getGameRoomErrorMessage */
+export const getWatchRoomErrorMessage = getGameRoomErrorMessage;
+
+/** @deprecated */
+export const isWatchTogetherRoom = isGameRoom;

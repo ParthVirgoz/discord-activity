@@ -116,6 +116,11 @@
   "exclude": [
     "node_modules",
     "public",
-    "**/*.test.ts"
+    "**/*.test.ts",
+    "src/ui/WatchApp.ts",
+    "src/youtube/**",
+    "src/utils/watchRoomJoin.ts",
+    "src/utils/watchRoomMessageBuffer.ts",
+    "src/utils/api.ts"
   ]
 }
