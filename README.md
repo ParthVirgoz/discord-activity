@@ -1,22 +1,22 @@
-# Bluff Party — Discord Activity
+# UNO Party — Discord Activity
 
-**Bluff Party** is a Fibbage-style party game for Discord voice channels. Write convincing lies, vote for the truth, and fool your friends — the same kind of game people love in **Jackbox**, **Gartic Phone**, and **Sketch Heads** on Discord.
+**UNO Party** is a multiplayer UNO card game for Discord voice channels. Play **Classic UNO** or **UNO No Mercy** with **2–10 players** in the same voice channel — built on Colyseus + Discord Embedded App SDK.
 
-## Why this game?
+## Game modes
 
-- Works great with **3–12 players** in voice
-- **No video streaming** — pure social fun, reliable in Discord Activities
-- Short rounds, lots of laughs, easy to pick up
-- Built on Colyseus + Discord Embedded App SDK
+### Classic UNO
+Standard rules: match color or number, action cards (+2, Skip, Reverse), Wild and Wild +4, +2 stacking.
+
+### UNO No Mercy
+Harder variant with +1/+5 draw cards, Skip Everyone, Wild Draw +2, Wild Draw Color, and special 0/1/7 rules (simplified from the official deck).
 
 ## How to play
 
 1. Join a **voice channel** and open the Activity
-2. Wait for **3+ players** — host taps **Start game**
-3. **Submit** a fake answer to the prompt
-4. **Vote** for what you think is the real answer
-5. Score **+2** for finding truth, **+1** for each friend fooled by your lie
-6. **5 rounds** — highest score wins
+2. Wait for **2+ players** — host picks **Classic UNO** or **UNO No Mercy**
+3. On your turn, **play a matching card** or **draw**
+4. Tap **UNO!** when you have one card left — others can **Catch!** if you forget
+5. First player to empty their hand **wins**
 
 ## Development
 

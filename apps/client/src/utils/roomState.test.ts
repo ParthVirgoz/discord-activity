@@ -1,18 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { isWatchTogetherRoom } from "./roomState.js";
+import { isGameRoom } from "./roomState.js";
 
-describe("isWatchTogetherRoom", () => {
-  it("rejects legacy game state with players only", () => {
+describe("isGameRoom", () => {
+  it("rejects legacy watch state with queue", () => {
     const room = {
-      state: { players: new Map(), members: undefined, queue: undefined },
+      state: { members: { forEach: () => {} }, queue: { forEach: () => {} }, handCounts: {}, topCard: {} },
     };
-    expect(isWatchTogetherRoom(room as never)).toBe(false);
+    expect(isGameRoom(room as never)).toBe(false);
   });
 
-  it("accepts watch together state", () => {
+  it("rejects legacy bluff state with options", () => {
+    const room = {
+      state: { members: { forEach: () => {} }, options: [], handCounts: {}, topCard: {} },
+    };
+    expect(isGameRoom(room as never)).toBe(false);
+  });
+
+  it("accepts UNO room state", () => {
     const members = { forEach: () => {} };
-    const queue = { forEach: () => {} };
-    const room = { state: { members, queue, hostSessionId: "x" } };
-    expect(isWatchTogetherRoom(room as never)).toBe(true);
+    const handCounts = { forEach: () => {} };
+    const topCard = { color: "r", value: "5" };
+    const room = { state: { members, handCounts, topCard, hostSessionId: "x" } };
+    expect(isGameRoom(room as never)).toBe(true);
   });
 });

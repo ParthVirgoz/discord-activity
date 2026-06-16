@@ -2,11 +2,21 @@ import type { Room } from "@colyseus/sdk";
 import type { GameRoomState } from "../schema.js";
 
 export function isGameRoom(room: Room<GameRoomState>): boolean {
-  const state = room.state as GameRoomState & { board?: unknown; queue?: unknown; players?: unknown };
-  if (state.board || state.queue || state.players) {
+  const state = room.state as GameRoomState & {
+    board?: unknown;
+    queue?: unknown;
+    players?: unknown;
+    options?: unknown;
+  };
+  if (state.board || state.queue || state.players || state.options) {
     return false;
   }
-  return state.members != null && typeof state.members.forEach === "function";
+  return (
+    state.members != null &&
+    typeof state.members.forEach === "function" &&
+    state.handCounts != null &&
+    state.topCard != null
+  );
 }
 
 export function waitForGameState(room: Room<GameRoomState>, timeoutMs = 8000): Promise<void> {

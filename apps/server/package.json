@@ -13,7 +13,7 @@
     "loadtest": "tsx loadtest/example.ts --room watch_room --numClients 2",
     "build": "npm run clean && tsc",
     "clean": "rimraf build",
-    "test": "mocha -r tsx test/GameRoom_test.ts test/validation_test.ts --exit --timeout 15000",
+    "test": "mocha -r tsx test/UnoRoom_test.ts test/validation_test.ts --exit --timeout 15000",
     "test:smoke": "tsx test/smoke.integration.ts",
     "test:smoke:prod": "tsx test/smoke.integration.ts https://discord-activity.up.railway.app"
   },

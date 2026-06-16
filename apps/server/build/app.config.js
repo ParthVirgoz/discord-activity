@@ -34,7 +34,7 @@ exports.default = (0, colyseus_1.defineServer)({
         app.get("/health", (_req, res) => {
             res.json({
                 ok: true,
-                service: "discord-game",
+                service: "bluff-party",
                 uptime: Math.floor(process.uptime()),
             });
         });

@@ -1,5 +1,6 @@
 export {
-  GameRoom as MyRoom,
-  GameRoomState as MyRoomState,
+  UnoRoom as MyRoom,
+  UnoRoomState as MyRoomState,
   Member,
-} from "./GameRoom";
+  TopCard,
+} from "./UnoRoom";

@@ -118,6 +118,7 @@
     "public",
     "**/*.test.ts",
     "src/ui/WatchApp.ts",
+    "src/ui/GameApp.ts",
     "src/youtube/**",
     "src/utils/watchRoomJoin.ts",
     "src/utils/watchRoomMessageBuffer.ts",

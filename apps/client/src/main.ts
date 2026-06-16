@@ -5,7 +5,7 @@ import { discordSDK } from "./utils/DiscordSDK.js";
 setupDiscordNetworking();
 import { colyseusSDK } from "./utils/Colyseus.js";
 import { authenticate } from "./utils/Auth.js";
-import { GameApp } from "./ui/GameApp.js";
+import { UnoApp } from "./ui/UnoApp.js";
 import { waitForGameState, getGameRoomErrorMessage } from "./utils/roomState.js";
 import { configureRoomResilience } from "./utils/roomConnection.js";
 import { joinGameRoom } from "./utils/gameRoomJoin.js";
@@ -38,7 +38,7 @@ function showLoading(message: string) {
   }
 
   try {
-    showLoading("Joining Bluff Party…");
+    showLoading("Joining UNO Party…");
 
     const channelId = discordSDK.channelId;
     if (!channelId) {
@@ -50,7 +50,7 @@ function showLoading(message: string) {
     await waitForGameState(room);
 
     appRoot.innerHTML = "";
-    new GameApp(room, appRoot);
+    new UnoApp(room, appRoot);
   } catch (e) {
     console.error("Failed to join game room", e);
     const msg = e instanceof Error ? e.message : String(e);
