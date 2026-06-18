@@ -9,6 +9,8 @@
   "scripts": {
     "start:server": "npm start -w server",
     "start:client": "npm start -w client",
+    "start:grapevibe": "npm run dev -w grapevibe",
+    "build:grapevibe": "npm run build -w grapevibe",
     "build": "npm run build -w server && npm run build -w client",
     "test": "npm test -w server && npm test -w client",
     "verify:local": "bash scripts/verify-local.sh",
