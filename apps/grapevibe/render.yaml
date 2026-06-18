@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: grapevibe
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BIND_HOST
+        value: 0.0.0.0
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false
